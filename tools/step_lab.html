@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>配平 · 分步提词</title>
+<style>
+:root{font-family:"Microsoft YaHei UI",sans-serif;color-scheme:dark;background:#111820;color:#eaf0f4;font-size:14px}*{box-sizing:border-box}body{max-width:1120px;margin:auto;padding:24px}h1{font-size:21px;margin:0}button,select,input{font:inherit;color:inherit;background:#202d38;border:1px solid #40505f;border-radius:6px;padding:7px 10px}button{cursor:pointer}button:hover{background:#314352}button:disabled{opacity:.4;cursor:default}a{color:#9ccddd}p{line-height:1.65}.muted{color:#92a4b4;font-size:12px}.head,.controls,.stats,.navigation{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.head{justify-content:space-between}.controls{margin:18px 0}.controls select{max-width:100%}.stats{font-weight:800;margin:14px 0}.red{color:#ff9299}.black{color:#c0b7fa}.green{color:#80dbb4}.error{color:#ff9b9b;white-space:pre-line}.board{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(280px,1fr);gap:18px}.cue{background:#1a2a31;border:1px solid #385449;border-left:4px solid #80dbb4;border-radius:9px;padding:22px;min-height:260px}.phase{font-size:13px;color:#99c6b5;margin-bottom:18px}.call{font-size:24px;line-height:1.8;font-weight:800;white-space:pre-line;overflow-wrap:anywhere}.navigation{justify-content:space-between;margin-top:22px}.next-preview{margin-top:16px;border-top:1px solid #355049;padding-top:12px;white-space:pre-line}.steps{display:grid;gap:7px}.step{display:block;text-align:left;padding:12px;border:1px solid #2e3f4d;border-radius:7px;background:#19232d;width:100%}.step.active{border-color:#80dbb4;background:#243b3c}.step .step-title{font-size:12px;color:#9db6c4;margin-bottom:6px}.step .step-text{font-weight:700;line-height:1.6;white-space:pre-line;font-size:13px}.raid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:15px}.team{display:grid;gap:6px}.team-title{color:#a9bac7;text-align:center;font-size:12px;padding:3px}.cell{min-height:67px;padding:9px;background:#1b2631;border:1px solid #304150;border-radius:6px;overflow:hidden}.cell.affected{border-color:#78c6ab;background:#223c3b}.cell.guide{box-shadow:inset 3px 0 #e5bd73}.cell-name{font-size:12px;text-overflow:ellipsis;overflow:hidden;white-space:nowrap}.cell-buff{font-size:15px;font-weight:800;margin-top:5px}.cell-note{font-size:10px;color:#9eb6be;min-height:12px;margin-top:4px}.badge{color:#ebc57d;font-size:10px;margin-left:4px}.subhead{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:22px}.subhead h2{font-size:15px;margin:0}.editor .cell{padding:7px}.editor input,.editor select{width:100%;padding:5px;margin-top:4px;min-width:0}.editor input{font-size:12px}details{margin-top:24px}summary{cursor:pointer;color:#afc0cc}.initial-counts{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.initial-counts label{display:grid;gap:4px;width:80px;font-size:12px}.initial-counts input{width:100%}.warning{color:#efc282;background:#352e22;border-radius:6px;padding:10px;margin:12px 0;display:none}.explain{line-height:1.8}.disabled{opacity:.4;pointer-events:none}#busy{min-height:20px}#summaryText{font-size:13px}.history{margin-top:30px;border-top:1px solid #304150;padding-top:14px}.mobile-summary{display:none}@media(max-width:760px){body{padding:16px 10px}.board{grid-template-columns:1fr}.call{font-size:21px}.cue{min-height:220px}.steps{grid-template-columns:repeat(2,minmax(0,1fr))}.step .step-text{display:none}.step .step-title{margin:0}.cell{padding:6px}.cell-name{font-size:10px}.raid{gap:4px}.cell-buff{font-size:13px}.editor input{padding:4px;font-size:10px}.head a{font-size:12px}}
+[hidden]{display:none!important}.board{display:block}.cue{min-height:0;padding:20px}.phase{margin-bottom:10px}.cue-line{display:flex;align-items:baseline;flex-wrap:wrap;gap:.45em;line-height:1.7;margin:5px 0}.buff-tag,.team-tag{font-size:.82em;font-weight:800;white-space:nowrap;border-radius:5px;padding:0 .3em;background:#293842;border:1px solid #45606b}.buff-tag.red{background:#3a282e;border-color:#8d4d59}.buff-tag.black{background:#2e2b43;border-color:#62577f}.team-options{font-size:.82em;display:inline-flex;gap:4px;align-items:baseline}.team-options .team-tag{font-size:inherit;cursor:pointer;padding:0 .3em}.team-tag.selected{border-color:#85d7b4;color:#a4edcd;background:#28433d}.cue-extra{font-size:.7em;color:#bdc7cf}.steps{display:flex;margin-top:12px;gap:6px}.step{width:auto;padding:5px 10px}.step .step-title{margin:0}.navigation{margin-top:12px}.subhead{margin-top:18px}.history{margin-top:16px}
+.raid-scroll{overflow-x:auto}.editable-raid{min-width:780px}.buff-options{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:2px;margin:7px 0 4px}.buff-option{padding:5px 0;font-size:12px;font-weight:700;min-width:0;border-radius:4px;text-align:center}.buff-option[aria-pressed="true"]{background:#324e4b;border-color:#8ee2be;color:#e8fff5;box-shadow:inset 0 0 0 1px #8ee2be}.buff-option.red[aria-pressed="true"]{background:#69363e;border-color:#ff9299;box-shadow:inset 0 0 0 1px #ff9299}.buff-option.black[aria-pressed="true"]{background:#433966;border-color:#c0b7fa;box-shadow:inset 0 0 0 1px #c0b7fa}textarea{width:100%;min-height:180px;margin-top:10px;padding:10px;color:inherit;background:#1b2631;border:1px solid #40505f;border-radius:6px;font:12px/1.5 Consolas,monospace}
+.quota-count{font:inherit;font-weight:inherit;color:inherit;padding:0;border:0;border-bottom:1px dotted #7caba0;border-radius:0;background:transparent}.balance-choice{font-size:.6em;font-weight:700;color:#99dcbc;background:#233c32;border-color:#426d58;padding:1px 6px}.balance-choice[aria-pressed="true"]{color:#c5ffe4;border-color:#8ee2be}
+.author-watermark{position:fixed;right:12px;bottom:9px;z-index:1;font-size:11px;color:#a7b5c1;opacity:.5;pointer-events:none;user-select:none}
+</style></head><body>
+<span class="author-watermark" aria-hidden="true">华乾·丐箩箩</span>
+<div class="head"><h1>配平 · 分步提词</h1><a href="/catalogue" target="_blank">人数归约对照</a></div>
+<div class="controls"><select id="mode" aria-label="模式"><option value="all">扇＋圈</option><option value="circle">仅圈</option></select><select id="preset" aria-label="场景"><option value="squad">整队吃圈</option><option value="fan">全团吃扇</option><option value="all">全团吃一个圈</option><option value="two">两圈分组</option><option value="hard">三圈难例</option><option value="balanced">仅引导</option></select><button id="loadPreset">载入场景</button><button id="shuffle">同人数，换队伍分布</button><button id="copyScene">复制局面</button><button id="calculate" aria-label="重新推演" title="重新推演">↻</button><span id="copyStatus" class="muted" role="status"></span></div>
+<details id="copyFallback" hidden><summary>局面文本</summary><textarea id="copyText" aria-label="局面文本" readonly></textarea></details>
+<div id="busy" class="muted" role="status"></div><div id="error" class="error" role="alert"></div>
+<div class="stats" id="summaryText"></div><div class="warning" id="warning"></div>
+<main id="result"><div class="board"><section class="cue"><div id="phase" class="phase">正在计算</div><div id="call" class="call" aria-live="polite"></div><div class="navigation" id="cueNavigation"><button id="previous" aria-label="上一步">←</button><span id="progress" class="muted"></span><button id="next">圈前 →</button></div></section><nav class="steps" id="steps" aria-label="两个指挥节点"></nav></div>
+<details><summary>站位</summary><p class="muted" id="guideScope">圈阶段的“大团／队伍／Buff组”均不含三名引导。引导顺序按实际点名核对。</p><p class="muted" id="formation"></p></details></main>
+<div class="subhead"><h2 id="raidTitle">团队 · 初始Buff</h2><span id="stepCounts" class="muted">负数为黑，正数为红，0为无Buff</span></div><div class="raid-scroll"><div id="raid" class="raid editable-raid"></div></div>
+<details id="editor"><summary>名字与人数</summary><div class="raid editor" id="editRaid"></div><details><summary>按人数生成初始团队</summary><div class="initial-counts" id="counts"></div><button id="applyCounts">生成并推演</button></details></details>
+<details id="replaySection" hidden><summary>看模拟过程</summary><div class="controls" id="replaySteps"></div><div id="replayCounts" class="stats"></div><div class="raid" id="replayRaid"></div><div id="eventLog" class="explain muted"></div></details>
+<details class="history"><summary>模拟范围</summary><p class="muted">在扇形前、圈前各喊一次，圈前确定全部分配。当前实验为25人存活、黑三至红三、无预先隔绝，按当前Buff计算。一、二队优先，三、四队次之，五队最后候补。人数范围默认标记最少人数，可点“正平”调整。0.5.0测试版已接入相同提词策略。</p></details>
+<script>
+(()=>{'use strict';const $=id=>document.getElementById(id),labels=['黑三','黑二','黑一','无Buff','红一','红二','红三'],nums=['一','二','三','四','五'];
+let roster = [], answer = null, active = 0, serial = 0, settledSerial = -1;
+let solveTimer = null, runningSolve = null, lastError = '';
+const presets={squad:[...Array(17).fill(1),...Array(8).fill(-1)],fan:[...Array(24).fill(-1),1],all:Array(25).fill(1),two:[...Array(3).fill(0),...Array(4).fill(1),...Array(18).fill(2)],hard:Array(25).fill(2),balanced:[-3,-2,-1,0,1,2,3,-1,1,0,-1,1,0,-1,1,0,-1,1,0,-1,1,0,-1,1,0]};
+function label(value,isolated=false){return(value===0?'无Buff':(value>0?'赤':'幽')+Math.abs(value))+(isolated?' · 隔绝':'')}
+function buffClass(v){return v>0?'red':v<0?'black':'muted'}
+function setRoster(values){roster=values.map((value,i)=>({key:`g${Math.floor(i/5)+1}p${i%5+1}`,value,name:''}));drawEditor();setCounts()}
+function setCounts(){labels.forEach((_,si)=>$(`count${si}`).value=roster.filter(p=>p.value===si-3).length)}
+function drawEditor() {
+ $('editRaid').replaceChildren();
+ for (let team = 0; team < 5; team++) {
+  const column = document.createElement('div');
+  column.className = 'team';
+  const title = document.createElement('div');
+  title.className = 'team-title';
+  title.textContent = nums[team] + '队';
+  column.append(title);
+  for (let slot = 0; slot < 5; slot++) {
+   const index = team * 5 + slot;
+   const name = document.createElement('input');
+   name.placeholder = nums[team] + '队' + (slot + 1);
+   name.value = roster[index].name || '';
+   name.maxLength = 24;
+   name.setAttribute('aria-label', name.placeholder + '名字');
+   name.addEventListener('input', () => {
+    roster[index].name = name.value;
+    requestSolve(150);
+   });
+   column.append(name);
+  }
+  $('editRaid').append(column);
+ }
+}
+function buffOptions(index) {
+ const options = document.createElement('div');
+ options.className = 'buff-options';
+ options.setAttribute('role', 'group');
+ options.setAttribute('aria-label', nums[Math.floor(index / 5)] + '队' + (index % 5 + 1) + '初始Buff');
+ for (let value = -3; value <= 3; value++) {
+  const button = document.createElement('button');
+  button.className = 'buff-option ' + buffClass(value);
+  button.textContent = String(value);
+  button.setAttribute('aria-pressed', String(roster[index].value === value));
+  button.setAttribute('aria-label', labels[value + 3]);
+  button.addEventListener('click', () => {
+   if (roster[index].value === value) return;
+   roster[index].value = value;
+   setCounts();
+   requestSolve(70);
+  });
+  options.append(button);
+ }
+ return options;
+}
+function drawInputRaid(cue = null) {
+ const states = roster.map((player, index) => ({
+  ...player,
+  name: player.name.trim() || nums[Math.floor(index / 5)] + '队' + (index % 5 + 1),
+  isolated: false
+ }));
+ drawRaid('raid', {states, affected: cue ? cue.affected : []});
+}
+function stats(counts){const frag=document.createDocumentFragment();for(const[text,cls]of[[`红 ${counts.red}`,'red'],[`黑 ${counts.black}`,'black'],[`差 ${counts.difference>0?'+':''}${counts.difference}`,counts.difference>0?'red':'black']]){const span=document.createElement('span');span.className=cls;span.textContent=text;frag.append(span)}const span=document.createElement('span');span.className=counts.balanced?'green':'';span.textContent=counts.balanced?'平衡':'';frag.append(span);return frag}
+function drawRaid(target, stage, prior=stage){
+ const root=$(target);root.replaceChildren();const affected=new Set(stage.affected),roles=new Map((answer?.guide_roles||[]).map(p=>[p.index,p]));
+ for(let team=0;team<5;team++){const col=document.createElement('div');col.className='team';const head=document.createElement('div');head.className='team-title';head.textContent=nums[team]+'队';col.append(head);
+  for(let slot=0;slot<5;slot++){const i=team*5+slot,p=stage.states[i],before=prior.states[i],role=roles.get(i),cell=document.createElement('div');cell.className='cell'+(affected.has(i)?' affected':'')+(role?' guide':'');const name=document.createElement('div');name.className='cell-name';name.textContent=p.name;
+   if(role){const badge=document.createElement('span');badge.className='badge';badge.textContent=`引导${role.order}`;name.append(badge)}
+   const buff=document.createElement('div');buff.className='cell-buff '+buffClass(p.value);buff.textContent=label(p.value,p.isolated);const note=document.createElement('div');note.className='cell-note';
+   const changed=before.value!==p.value||before.isolated!==p.isolated;
+   note.textContent=changed?`${label(before.value,before.isolated)} → ${label(p.value,p.isolated)}`:role?role.place:affected.has(i)?'参与处理':' ';
+   cell.append(name);if(target==='raid')cell.append(buffOptions(i));cell.append(buff,note);col.append(cell)}root.append(col)}
+}
+function showReplay(index){const stage=answer.timeline[index],prior=answer.timeline[Math.max(0,index-1)];drawRaid('replayRaid',stage,prior);$('replayCounts').replaceChildren(stats(stage.counts));$('eventLog').replaceChildren();
+ for(const event of stage.events){const line=document.createElement('div');line.textContent=`${stage.states[event.index].name}：${label(event.before)} → ${label(event.after,event.isolated)}${event.applied?'':'（隔绝拦截本次Buff）'}${event.strong?' · 强消融':event.weak?' · 弱消融':''}`;$('eventLog').append(line)}
+ if(!stage.events.length)$('eventLog').textContent='这一步没有Buff变化。';
+}
+function renderCue(cue) {
+ const root = $('call');
+ root.replaceChildren();
+ for (const row of cue.rows) {
+  const line = document.createElement('div');
+  line.className = 'cue-line';
+  const count = document.createElement(row.minimum_count ? 'button' : 'span');
+  count.textContent = row.count_text;
+  if (row.minimum_count) {
+   count.className = 'quota-count';
+   count.title = `当前标记${row.count}人，点击选择最少人数`;
+   count.addEventListener('click', () => selectQuota(row.minimum_count));
+  }
+  line.append(count);
+  if (!['全团', '大团'].includes(row.count_text)) {
+   for (const buff of row.buffs) {
+    const tag = document.createElement('span');
+    tag.className = 'buff-tag ' + buffClass(buff.value);
+    tag.textContent = '[' + buff.label + (row.buffs.length > 1 ? '×' + buff.count : '') + ']';
+    line.append(tag);
+   }
+  }
+  const action = document.createElement('span');
+  action.textContent = row.action;
+  line.append(action);
+  if (row.balanced_count && row.minimum_count !== row.maximum_count) {
+   const balance = document.createElement('button');
+   balance.className = 'balance-choice';
+   balance.textContent = row.balanced_count + '人正平';
+   balance.title = `使用${row.balanced_count}人，使红黑人数相等`;
+   balance.setAttribute('aria-pressed', String(row.count === row.balanced_count));
+   balance.addEventListener('click', () => selectQuota(row.balanced_count));
+   line.append(balance);
+  }
+  const teams = row.team_choices || row.teams;
+  if (teams.length) {
+   const options = document.createElement('span');
+   options.className = 'team-options';
+   const open = document.createElement('span');
+   open.textContent = '(';
+   options.append(open);
+   teams.forEach((team, index) => {
+    if (index) {
+     const divider = document.createElement('span');
+     divider.textContent = row.team_choices ? '/' : '+';
+     options.append(divider);
+    }
+    const tag = document.createElement(row.team_choices ? 'button' : 'span');
+    tag.className = 'team-tag' + (row.team_choices && row.teams.includes(team) ? ' selected' : '');
+    tag.textContent = '[' + team + '队]';
+    if (row.team_choices) {
+     tag.setAttribute('aria-pressed', String(row.teams.includes(team)));
+     tag.addEventListener('click', () => {
+      const variant = answer.team_variants.find(option => option.team === team);
+      if (variant) render({...answer, ...variant.board});
+     });
+    }
+    options.append(tag);
+   });
+   const close = document.createElement('span');
+   close.textContent = ')';
+   options.append(close);
+   line.append(options);
+  }
+  const extras = [];
+  if (row.include_names.length) extras.push('加' + row.include_names.join('、'));
+  if (row.exclude_names.length) extras.push('除' + row.exclude_names.join('、'));
+  if (row.reference === 'initial' && row.role === 'circle') extras.push('扇前Buff');
+  if (extras.length) {
+   const names = document.createElement('span');
+   names.className = 'cue-extra';
+   names.textContent = '(' + extras.join(' / ') + ')';
+   line.append(names);
+  }
+  root.append(line);
+ }
+}
+function selectQuota(count) {
+ const variant = answer.quota_variants.find(option => option.count === count);
+ if (variant) render({...answer, ...variant.board});
+}
+function showStep(index) {
+ if (!answer || !answer.cues) return;
+ const cues = answer.cues.filter(cue => cue.rows.length);
+ if (index < 0 || index >= cues.length) return;
+ active = index;
+ const cue = cues[index];
+ $('phase').textContent = cue.title;
+ renderCue(cue);
+ $('progress').textContent = `${index + 1} / ${cues.length}`;
+ $('cueNavigation').hidden = cues.length < 2;
+ $('steps').hidden = cues.length < 2;
+ $('previous').disabled = index === 0;
+ $('next').disabled = index === cues.length - 1;
+ $('next').textContent = index < cues.length - 1 ? cues[index + 1].title + ' →' : '→';
+ document.querySelectorAll('.step').forEach((button, i) => {
+  button.classList.toggle('active', i === index);
+  button.setAttribute('aria-current', i === index ? 'step' : 'false');
+ });
+ drawInputRaid(cue);
+}
+function render(data){answer=data;$('steps').replaceChildren();$('replaySteps').replaceChildren();$('result').hidden=data.status!=='solved';$('replaySection').hidden=data.status!=='solved';$('warning').style.display='none';
+ if(data.status!=='solved'){$('summaryText').replaceChildren();$('error').textContent=data.prompt;return}$('error').textContent='';$('summaryText').replaceChildren(stats(data.initial));
+ const text=document.createElement('span');text.className='muted';text.textContent=`结算 红${data.final.red} 黑${data.final.black} 差${data.final.difference>0?'+':''}${data.final.difference}`;$('summaryText').append(text);
+ data.cues.filter(cue => cue.rows.length).forEach((cue, index) => {
+  const button = document.createElement('button');
+  button.className = 'step';
+  const title = document.createElement('div');
+  title.className = 'step-title';
+  title.textContent = cue.title;
+  button.append(title);
+  button.addEventListener('click', () => showStep(index));
+  $('steps').append(button);
+ });
+ data.timeline.forEach((stage,i)=>{const button=document.createElement('button');button.textContent=stage.title;button.addEventListener('click',()=>showReplay(i));$('replaySteps').append(button)});
+ $('formation').textContent=data.formation;
+ if (data.strong_events) {
+  $('warning').style.display = 'block';
+  $('warning').textContent = '强消融 × ' + data.strong_events;
+ }
+ showStep(0);
+ showReplay(0);
+}
+function requestSolve(delay = 0) {
+ serial++;
+ answer = null;
+ lastError = '';
+ $('error').textContent = '';
+ $('copyStatus').textContent = '';
+ $('copyFallback').hidden = true;
+ $('result').hidden = true;
+ $('replaySection').hidden = true;
+ $('summaryText').replaceChildren();
+ $('busy').textContent = '正在推演…';
+ drawInputRaid();
+ clearTimeout(solveTimer);
+ solveTimer = setTimeout(() => {
+  solveTimer = null;
+  runLatest();
+ }, delay);
+}
+function runLatest() {
+ if (runningSolve) return runningSolve;
+ if (settledSerial === serial) return Promise.resolve();
+ const id = serial;
+ const payload = {roster: roster.map(player => ({...player})), mode: $('mode').value};
+ const work = (async () => {
+  try {
+   const response = await fetch('/api/steps', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+   });
+   const data = await response.json();
+   if (id !== serial) return;
+   if (!response.ok) throw new Error(data.error || '计算失败');
+   render(data);
+   $('busy').textContent = `${data.elapsed_ms} ms`;
+  } catch (error) {
+   if (id !== serial) return;
+   lastError = error.message;
+   $('error').textContent = lastError;
+   $('busy').textContent = '';
+   $('result').hidden = true;
+   $('replaySection').hidden = true;
+   $('summaryText').replaceChildren();
+  } finally {
+   if (id === serial) settledSerial = id;
+  }
+ })();
+ runningSolve = work;
+ work.finally(() => {
+  if (runningSolve === work) runningSolve = null;
+  if (settledSerial !== serial && solveTimer === null) runLatest();
+ });
+ return work;
+}
+async function flushSolve() {
+ clearTimeout(solveTimer);
+ solveTimer = null;
+ while (settledSerial !== serial) await runLatest();
+}
+function solve() {
+ requestSolve();
+ return flushSolve();
+}
+function buildScene() {
+ const scene = {
+  type: 'lisha-scene',
+  version: 1,
+  mode: $('mode').value,
+  teams: Array.from({length: 5}, (_, team) => roster.slice(team * 5, team * 5 + 5).map(player => player.value))
+ };
+ const names = Object.fromEntries(roster.filter(player => player.name.trim()).map(player => [player.key, player.name]));
+ if (Object.keys(names).length) scene.names = names;
+ scene.analysis = {
+  status: answer ? answer.status : 'error',
+  prompt: answer ? answer.prompt : lastError
+ };
+ if (answer && answer.status === 'solved') {
+  scene.analysis.stage = answer.cues.filter(cue => cue.rows.length)[active].id;
+  scene.analysis.guides = answer.guide_roles.map(role => role.key);
+  scene.analysis.actions = answer.actions.flatMap((code, index) => code ? [{
+   key: roster[index].key,
+   fan: Boolean(Math.floor(code / 4)),
+   hits: code % 4
+  }] : []);
+  scene.analysis.final = answer.final;
+  scene.analysis.extra_named_count = answer.extra_named_count;
+  if (answer.quota) {
+   const row = answer.cues.flatMap(cue => cue.rows).find(row => row.quota);
+   scene.analysis.quota = {
+    selected_count: row.count,
+    minimum: row.minimum_count,
+    maximum: row.maximum_count,
+    balanced_count: row.balanced_count
+   };
+  }
+ }
+ return scene;
+}
+async function copyScene() {
+ const button = $('copyScene');
+ button.disabled = true;
+ $('copyStatus').textContent = '生成局面…';
+ try {
+  await flushSolve();
+  const text = JSON.stringify(buildScene(), null, 2);
+  let copied = false;
+  try {
+   await navigator.clipboard.writeText(text);
+   copied = true;
+  } catch {
+   $('copyFallback').hidden = false;
+   $('copyFallback').open = true;
+   $('copyText').value = text;
+   $('copyText').focus();
+   $('copyText').select();
+   if (typeof document.execCommand === 'function') copied = document.execCommand('copy');
+  }
+  $('copyFallback').hidden = copied;
+  $('copyStatus').textContent = copied ? '已复制' : '复制下方局面文本';
+ } catch (error) {
+  $('copyStatus').textContent = '复制失败，' + error.message;
+ } finally {
+  button.disabled = false;
+ }
+}
+labels.forEach((text,si)=>{const l=document.createElement('label');l.textContent=text;const n=document.createElement('input');n.id=`count${si}`;n.type='number';n.min=0;n.max=25;n.value=0;n.setAttribute('aria-label',text+'人数');l.append(n);$('counts').append(l)});
+$('loadPreset').addEventListener('click',()=>{setRoster(presets[$('preset').value]);solve()});$('shuffle').addEventListener('click',()=>{for(let i=roster.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[roster[i].value,roster[j].value]=[roster[j].value,roster[i].value]}drawEditor();solve()});$('calculate').addEventListener('click',solve);$('copyScene').addEventListener('click',copyScene);$('mode').addEventListener('change',solve);$('previous').addEventListener('click',()=>showStep(active-1));$('next').addEventListener('click',()=>showStep(active+1));$('applyCounts').addEventListener('click',()=>{const counts=labels.map((_,i)=>Number($(`count${i}`).value));if(counts.some(n=>!Number.isInteger(n)||n<0)||counts.reduce((a,b)=>a+b,0)!==25){$('error').textContent='七种人数之和需为25。';return}setRoster(counts.flatMap((n,si)=>Array(n).fill(si-3)));solve()});
+const parameters = new URLSearchParams(window.location.search);
+const requested = parameters.get('teams');
+const parts = requested ? requested.split(',') : [];
+const validScene = parts.length === 25 && parts.every(value => /^-?[0-3]$/.test(value));
+if (validScene && ['all', 'circle'].includes(parameters.get('mode'))) $('mode').value = parameters.get('mode');
+setRoster(validScene ? parts.map(Number) : presets.squad);
+solve();})();
+</script></body></html>

@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lisha-overlay"
+dynamic = ["version"]
+description = "戾煞配平工具：透明屏幕选区与独立悬浮面板"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/*.txt"]
+authors = [{name = "华乾·丐箩箩"}]
+requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
+dependencies = ["PySide6-Essentials>=6.8,<7", "mss>=10,<11", "numpy>=2,<3", "opencv-python-headless>=4.10,<5", "onnxruntime>=1.23,<2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pyinstaller>=6,<7", "build>=1.2,<2", "ruff>=0.14,<1"]
+
+[project.urls]
+Repository = "https://github.com/66maer/lisha-balancer"
+Issues = "https://github.com/66maer/lisha-balancer/issues"
+
+[project.gui-scripts]
+lisha-overlay = "lisha_overlay.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "lisha_overlay.__version__"}
+
+[tool.setuptools.package-data]
+lisha_overlay = ["assets/buffs/*.png", "assets/buffs/*.json", "assets/learned/*.onnx", "assets/learned/*.json", "assets/learned/*.png", "assets/strategy/*.json", "assets/strategy/*/*.json", "assets/strategy/*/*.npz", "assets/strategy/*/*.npy"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+include = ["pyproject.toml", "main.py", "src/**/*.py", "tests/**/*.py", "tools/**/*.py"]
+
+[tool.ruff.lint]
+select = ["F", "E9"]

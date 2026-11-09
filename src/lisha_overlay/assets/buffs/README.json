@@ -1,0 +1,168 @@
+{
+  "schema_version": 4,
+  "purpose": "重伤字形匹配的后备样本，以及覆盖层诊断显示使用的四个 Buff 图标。实时 Buff 类型、层数和隔绝识别使用 assets/learned 中的模型。",
+  "privacy": "仅保存单个Buff方形图标、数字局部和重伤二字裁片；不保存姓名、血量、完整玩家格子、整张参考图或桌面截图。",
+  "source": "2026-11-03提供的373×505参考图、345×498团队ROI、412×524隔绝示例，以及独立隔绝原图。实拍仅保留以下小裁片，未保存整图到发行资源。",
+  "coordinate_convention": "所有 roi_px 均相对相应裁片左上角，顺序为 [x, y, width, height]。",
+  "templates": {
+    "ui_red_1.png": {
+      "buff": "red",
+      "observed_layer": 1,
+      "size_px": [
+        21,
+        21
+      ],
+      "border_style": "red",
+      "label": "赤",
+      "label_roi_px": [
+        0,
+        8,
+        14,
+        13
+      ],
+      "digit_roi_px": null,
+      "layer_evidence": "用户说明的单层红边样式，画面中没有独立数字 1。",
+      "runtime_use": "diagnostic_overlay_icon"
+    },
+    "ui_black_1.png": {
+      "buff": "black",
+      "observed_layer": 1,
+      "size_px": [
+        21,
+        21
+      ],
+      "border_style": "purple_dark",
+      "label": "幽",
+      "label_roi_px": [
+        0,
+        8,
+        14,
+        13
+      ],
+      "digit_roi_px": null,
+      "layer_evidence": "用户说明的单层紫黑边样式，画面中没有独立数字 1。",
+      "runtime_use": "diagnostic_overlay_icon"
+    },
+    "ui_red_3.png": {
+      "buff": "red",
+      "observed_layer": 3,
+      "size_px": [
+        22,
+        22
+      ],
+      "border_style": "white",
+      "minimum_layer_by_border": 2,
+      "label": "赤3",
+      "label_roi_px": [
+        0,
+        8,
+        14,
+        14
+      ],
+      "digit_roi_px": [
+        14,
+        8,
+        8,
+        14
+      ],
+      "layer_evidence": "右下可见白色数字 3，3 层结论来自数字而非白边。",
+      "runtime_use": "diagnostic_overlay_icon"
+    },
+    "ui_black_2.png": {
+      "buff": "black",
+      "observed_layer": 2,
+      "size_px": [
+        22,
+        22
+      ],
+      "border_style": "white",
+      "minimum_layer_by_border": 2,
+      "label": "幽2",
+      "label_roi_px": [
+        0,
+        9,
+        14,
+        13
+      ],
+      "digit_roi_px": [
+        13,
+        9,
+        9,
+        13
+      ],
+      "layer_evidence": "右下可见白色数字 2，2 层结论来自数字而非白边。",
+      "runtime_use": "diagnostic_overlay_icon"
+    },
+    "ui_dead_current.png": {
+      "role": "dead",
+      "size_px": [
+        30,
+        16
+      ],
+      "source_frame_size_px": [
+        345,
+        498
+      ],
+      "source_rect_px": [
+        303,
+        205,
+        30,
+        16
+      ],
+      "privacy": "仅本角色所述小裁片，不含姓名、血量或完整玩家格子。",
+      "label": "重伤",
+      "meaning": "死亡文本证据，不用于Buff种类或层数判断。",
+      "runtime_use": "death_text_fallback"
+    },
+    "ui_dead.png": {
+      "role": "dead",
+      "label": "重伤",
+      "size_px": [
+        33,
+        21
+      ],
+      "privacy": "仅重伤二字与黑底，无姓名或血量。",
+      "runtime_use": "death_text_fallback"
+    },
+    "ui_dead_isolationg4p1.png": {
+      "role": "dead",
+      "size_px": [
+        30,
+        16
+      ],
+      "source_frame_size_px": [
+        412,
+        524
+      ],
+      "source_rect_px": [
+        113,
+        300,
+        30,
+        16
+      ],
+      "evidence": "仅重伤二字与黑底，不含姓名和血量。",
+      "privacy": "仅本角色所述图标/角标/重伤小裁片，无姓名、血量或整张团队图。",
+      "runtime_use": "death_text_fallback"
+    },
+    "ui_dead_isolationg5p2.png": {
+      "role": "dead",
+      "size_px": [
+        28,
+        14
+      ],
+      "source_frame_size_px": [
+        412,
+        524
+      ],
+      "source_rect_px": [
+        225,
+        346,
+        28,
+        14
+      ],
+      "evidence": "仅较暗重伤二字与黑底，不含姓名和血量。",
+      "privacy": "仅本角色所述图标/角标/重伤小裁片，无姓名、血量或整张团队图。",
+      "runtime_use": "death_text_fallback"
+    }
+  }
+}

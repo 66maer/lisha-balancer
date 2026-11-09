@@ -1,0 +1,15 @@
+include README.md LICENSE THIRD_PARTY_NOTICES.md pyproject.toml requirements.txt
+include main.py 启动工具.cmd
+include .gitattributes .gitignore
+recursive-include LICENSES *.txt
+recursive-include assets *.ico *.cmd *.txt *.png
+recursive-include src/lisha_overlay/assets *.png *.json *.onnx *.npz *.npy
+recursive-include tools *.py *.ps1 *.html
+recursive-include tests *.py
+prune training
+prune user
+prune runs
+prune artifacts
+prune build
+prune dist
+global-exclude __pycache__ *.py[cod] *.log

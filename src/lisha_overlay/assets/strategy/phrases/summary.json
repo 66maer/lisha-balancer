@@ -1,0 +1,78 @@
+{
+  "purpose": "Search uniform-group / one split-group templates for every certified state.\n\nAt a fixed target headcount, group outcomes form a product of simplexes cut\nby one sum constraint. Vertices have at most one mixed group. Integer quotas\nand the five permitted final differences are enumerated explicitly; no\nclaim is made about globally shortest arbitrary natural-language wording.\n",
+  "histograms": 736281,
+  "modes": {
+    "all": {
+      "families": {
+        "仅三点引导": 220742,
+        "黑一吃扇消掉": 117478,
+        "无Buff吃扇补红": 35254,
+        "黑一与无Buff吃扇": 33640,
+        "红一进一圈消掉": 80067,
+        "无Buff进一圈补黑": 24098,
+        "红一与无Buff进一圈": 3866,
+        "一圈为主，少量两圈": 90178,
+        "两圈为主，少量三圈": 8011,
+        "无解": 122947
+      },
+      "checks": {
+        "all_solved_plans_replayed": 613334,
+        "oracle_compared": 736281,
+        "oracle_mismatches": 0
+      },
+      "exception_counts": [
+        589273,
+        15106,
+        5843,
+        2407,
+        668,
+        37
+      ],
+      "maximum_exception_count": 5,
+      "at_most_one_split_buff_class": true,
+      "minimum_circle_limits": {
+        "0": 407114,
+        "1": 108031,
+        "2": 90178,
+        "3": 8011,
+        "255": 122947
+      }
+    },
+    "circle": {
+      "families": {
+        "仅三点引导": 220742,
+        "黑一吃扇消掉": 0,
+        "无Buff吃扇补红": 0,
+        "黑一与无Buff吃扇": 0,
+        "红一进一圈消掉": 80067,
+        "无Buff进一圈补黑": 24098,
+        "红一与无Buff进一圈": 3866,
+        "一圈为主，少量两圈": 90178,
+        "两圈为主，少量三圈": 8011,
+        "无解": 309319
+      },
+      "checks": {
+        "all_solved_plans_replayed": 426962,
+        "oracle_compared": 736281,
+        "oracle_mismatches": 0
+      },
+      "exception_counts": [
+        411861,
+        8407,
+        4597,
+        1454,
+        606,
+        37
+      ],
+      "maximum_exception_count": 5,
+      "at_most_one_split_buff_class": true,
+      "minimum_circle_limits": {
+        "0": 220742,
+        "1": 108031,
+        "2": 90178,
+        "3": 8011,
+        "255": 309319
+      }
+    }
+  }
+}

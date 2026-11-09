@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>配平模拟</title>
+<style>
+:root{color-scheme:dark light;font-family:"Microsoft YaHei UI",sans-serif;font-size:14px;background:#10161d;color:#e3e9ee}*{box-sizing:border-box}body{margin:0 auto;max-width:1000px;padding:28px 22px}h1{font-size:22px;margin:0 0 5px}p{line-height:1.65;margin:8px 0;color:#a7b5c1}.controls,.counts,.resultline{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.controls{margin:22px 0 16px}button,select,input{font:inherit;color:inherit;background:#1b2631;border:1px solid #3b4c59;border-radius:5px;padding:7px 10px}button{cursor:pointer}button:hover{background:#2b3d4b}.counts label{display:grid;gap:6px;min-width:75px;flex:1}.counts input{width:100%}.red{color:#ff7d88}.black{color:#b1acff}.resultline{margin:20px 0 8px;font-weight:bold}.prompt{background:#1b2931;border-left:3px solid #6bbba3;padding:18px;font-size:19px;line-height:1.7;font-weight:bold;word-break:break-word}table{width:100%;border-collapse:collapse;margin:14px 0}th,td{padding:9px 7px;border-bottom:1px solid #2c3b46;text-align:left;vertical-align:top}th{font-weight:normal;color:#a7b5c1}.details{margin-top:22px}details>summary{cursor:pointer}.status{color:#7dd6ad}.error{color:#ff9292}.small{font-size:12px}#summary td:not(:first-child){font-variant-numeric:tabular-nums}a{color:#8cd4df}@media(max-width:600px){body{padding:18px 12px}.counts label{min-width:70px;flex-basis:20%}.prompt{font-size:17px}}
+.author-watermark{position:fixed;right:12px;bottom:9px;z-index:1;font-size:11px;color:#a7b5c1;opacity:.5;pointer-events:none;user-select:none}
+</style></head><body>
+<span class="author-watermark" aria-hidden="true">华乾·丐箩箩</span>
+<h1>配平模拟</h1><p id="policy-summary">25人 · 全部736,281种分布 · 优先大团同站一点 · 额外点名最多5人，三位引导另计</p>
+<div class="controls"><select id="policy" aria-label="指挥方式"><option value="bulk">大团优先</option><option value="buff">对比：旧Buff分组</option></select><select id="mode" aria-label="模式"><option value="all">扇＋圈</option><option value="circle">仅圈</option></select><select id="family" aria-label="案例类型"></select><button id="example">换一个同类情况</button><span id="sum" aria-live="polite"></span></div>
+<div class="counts" id="counts"></div>
+<div id="message" role="alert"></div>
+<div class="resultline" id="resultline"></div><div class="prompt" id="prompt" aria-live="polite">正在加载…</div>
+<p id="guide"></p><p id="formation"></p><p id="notice" class="error"></p>
+<table><thead><tr><th>Buff</th><th>人数</th><th>引导</th><th>大多数人</th><th>例外</th></tr></thead><tbody id="rows"></tbody></table>
+<p class="small">甲乙丙为三名引导，不占额外五人的名额；丁戊己庚辛为额外补位，均非真实姓名。主点就是预设的1号点，旁点在附近；按实际点名先后安排主点／单走／旁点，引导各吃自己的圈。“大团”不含三引导；“全团吃扇”包含引导，喊除外时按名单。Buff分组口令不含引导，同人跨阶段只计一次。三圈需三角重叠站位。</p>
+<details class="details" open><summary>全量归约结果</summary><table id="summary"><thead><tr><th>类型</th><th>扇＋圈</th><th>仅圈</th></tr></thead><tbody></tbody></table></details>
+<p class="small">人数分布的计数不代表实战概率。模型包含三名可控引导、每人至多一次扇形、三次黑圈、抵消、隔绝和五层限制；不含预先隔绝、死亡、四层、血量与移动耗时。三层仍计入红黑人数。</p>
+<script>
+(()=>{const labels=['黑三','黑二','黑一','无Buff','红一','红二','红三'];const root=document.getElementById('counts');const mode=document.getElementById('mode'),policy=document.getElementById('policy');let serial=0,timer;
+labels.forEach((name,i)=>{let label=document.createElement('label');label.textContent=name;label.className=i>3?'red':i<3?'black':'';const input=document.createElement('input');input.type='number';input.min=0;input.max=25;input.value=[0,0,24,0,1,0,0][i];input.setAttribute('aria-label',name+'人数');input.addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(solve,180)});label.append(input);root.append(label)});
+const inputs=[...root.querySelectorAll('input')];const family=document.getElementById('family');
+const esc=t=>String(t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function load(url){const response=await fetch(url);const data=await response.json();if(!response.ok)throw Error(data.error||'读取失败');return data}
+function render(data){
+const red=data.counts.slice(4).reduce((a,b)=>a+b,0),black=data.counts.slice(0,3).reduce((a,b)=>a+b,0);
+document.getElementById('message').textContent='';
+const named=data.named_count===undefined?`额外例外${data.exception_count}/5人，另3引导`:
+  data.guides_included?`总点名${data.named_count}/${data.maximum_total_named}人（含引导）`:
+  `额外点名${data.extra_named_count}/${data.extra_named_budget}人，另${data.guide_named_count}引导`;
+document.getElementById('resultline').innerHTML=`<span class="red">红 ${red}</span><span class="black">黑 ${black}</span><span>差 ${red-black>0?'+':''}${red-black}</span><span>· ${esc(data.family)}</span><span class="status">${data.final_difference===null?'':`结算差 ${data.final_difference} · ${named}`}</span>`;
+const prompt=document.getElementById('prompt');prompt.replaceChildren();
+const lines=data.guide_prompt?[data.fan_prompt,data.guide_prompt,data.body_prompt]:[data.prompt];
+lines.filter(Boolean).forEach(text=>{const line=document.createElement('div');line.textContent=text;prompt.append(line)});
+const people=data.guide_roles?data.guide_roles.map(p=>`${p.alias}：${p.buff}`).join('，'):data.guide_text;
+document.getElementById('guide').textContent='引导：'+people;
+document.getElementById('formation').textContent=data.formation?'站位：'+data.formation:'';
+document.getElementById('notice').textContent=data.strong_events?`含${data.strong_events}次强消融（约45%气血），需确认能承受。`:
+  Math.abs(red-black)<=2&&(data.has_extra_actions||data.quota&&data.quota.some(Boolean))?'当前人数已平衡，但三次必吃圈会改变人数；这一例仍需安排。':'';
+document.getElementById('rows').innerHTML=data.rows.map(r=>`<tr><td>${esc(r.buff)}</td><td>${r.total}</td><td>${r.guides||'—'}</td><td>${esc(r.normal)}</td><td>${r.exceptions.map(e=>esc(e.alias+'：'+e.action)).join('；')||'—'}</td></tr>`).join('');
+}
+async function solve(){const id=++serial,values=inputs.map(x=>Number(x.value)),sum=values.reduce((a,b)=>a+b,0);document.getElementById('sum').textContent=`合计 ${sum}/25`;if(sum!==25){document.getElementById('message').textContent='人数之和需为25。';return}try{const data=await load(`/api/solve?policy=${policy.value}&mode=${mode.value}&counts=${values.join(',')}`);if(id===serial){if(data.family_id!==undefined)family.value=data.family_id;render(data)}}catch(e){document.getElementById('message').textContent=e.message}}
+async function example(){const id=++serial;try{const data=await load(`/api/example?policy=${policy.value}&mode=${mode.value}&family=${family.value}`);if(id!==serial)return;inputs.forEach((x,i)=>x.value=data.counts[i]);document.getElementById('sum').textContent='合计 25/25';render(data)}catch(e){document.getElementById('message').textContent=e.message}}
+async function summary(){
+const data=await load(`/api/summary?policy=${policy.value}`);
+document.getElementById('policy-summary').textContent=policy.value==='bulk'?
+ '25人 · 全部736,281种分布 · 优先大团同站一点 · 额外点名最多5人，三位引导另计':
+ '按Buff分组对比；额外例外最多5人，三位引导不占名额。';
+const names=Object.keys(data.modes.all.families),a=Object.values(data.modes.all.families),b=Object.values(data.modes.circle.families);
+family.replaceChildren();names.forEach((name,i)=>{const o=document.createElement('option');o.value=i;o.textContent=name;o.disabled=Object.values(data.modes[mode.value].families)[i]===0;family.append(o)});
+document.querySelector('#summary tbody').innerHTML=names.map((n,i)=>`<tr><td>${esc(n)}</td><td>${a[i].toLocaleString()}</td><td>${b[i].toLocaleString()}</td></tr>`).join('');
+}
+mode.addEventListener('change',()=>summary().then(solve));policy.addEventListener('change',()=>summary().then(solve));document.getElementById('example').addEventListener('click',example);family.addEventListener('change',example);summary().then(solve);})();
+</script></body></html>

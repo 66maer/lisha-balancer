@@ -1,0 +1,81 @@
+{
+  "model_sha256": "ef8f27ee118e0391de364fd3f341a6157ced12f8f985ae3b79525a4eb5373270",
+  "source_configuration_sha256": "c7fd77f706be44b069d0d41b07f2110f9645f7bf090ac9c9ab89b6048788a45c",
+  "source_experiment": "icon-acquisition-counter-001",
+  "proposal_geometry": {
+    "snap_shared_top": true,
+    "minimum_texture": 4.893749856948852,
+    "minimum_training_positive_texture": 13.982142448425293,
+    "calibration_rule": "35% of the weakest human training target or visually confirmed training occlusion",
+    "maximum_top_deviation": 2
+  },
+  "isolation_body_support_min": 0.001,
+  "input_size": 40,
+  "outputs": [
+    "kind",
+    "digit",
+    "isolation_body_support"
+  ],
+  "shared_team_scale": true,
+  "human_answer_count": 743,
+  "remaining_heldout_count": 141,
+  "withdrawn_heldout_frame": "QQ20261104-015221",
+  "limitations": [
+    "Temporal holdouts share the accounts and encounters used for calibration.",
+    "All these screenshots have been examined previously; this is regression evidence, not an unseen user test.",
+    "Human confirmation defines row state/isolation, not detector object boxes.",
+    "B015207 was previously a regression test and is now development/training material to cover real black3/black4. The revised test is not a new blind test.",
+    "Warm-start parent has earlier assistant-labelled training repairs; not a from-scratch or blind test.",
+    "The two added human video answers are training examples. Their adjacent frames are known regression evidence.",
+    "The negative-word repair uses explicitly assistant-labelled visible non-target patches, without inferring any hidden player state.",
+    "Any assistant numeric additions recorded in the counter training index remain assistant training material, not human truth or independent video tests.",
+    "Foreground UI may hide the actual player state. Unsupported isolation is None and must pause fresh output.",
+    "Whole-team confirmation uses two consistent valid frames and holds an unconfirmed transition at most300ms.",
+    "Frame QQ20261104-015221 and all its rows are now known development, withdrawn from heldout claims. Remaining heldout count 141.",
+    "One human-confirmed real red4 video example is now included in training; it does not establish unseen red4 accuracy.",
+    "The source overlay defaults to this learned CPU backend. Known regressions passed; competing live-game load and unseen accounts remain unvalidated.",
+    "Death and foreground-UI protections use assistant-reviewed visible shapes/words, not systematic human death or occlusion labels.",
+    "Exact three-input caching reuses only raw network outputs. Changing input pixels are re-evaluated; geometry and occlusion checks still run every frame."
+  ],
+  "cursor_mask_sha256": "afe6883937d1eb9862d680138e3e6d40b8af2b8e0e07c4af832cba89119f0f40",
+  "cursor_reference": {
+    "purpose": "visible_cursor_shape_only_not_player_truth",
+    "source_recording": "2026.11.03 - 22.12.34.02",
+    "requested_seconds": 36.5,
+    "shape_matching": "teal_connected_component_normalized_shape",
+    "limitations": [
+      "Other cursor shapes or colors may not match."
+    ]
+  },
+  "death_word_mask_sha256": "3f9a0f3b4ee14e964c8c9030591aef497a88f68b9874c508f927284ae79da257",
+  "death_word_reference": {
+    "source_video": "2026.11.02 - 23.01.11.04",
+    "requested_seconds": 291.5,
+    "label_basis": "assistant_visual_read_of_literal_zhong_shang_not_human_answer",
+    "health_value_is_not_a_death_label": true,
+    "visible_word_region_in_roi": [
+      29,
+      9,
+      71,
+      30
+    ]
+  },
+  "minimum_target_body_colour": 0.02,
+  "body_colour_calibration": {
+    "minimum_observed_human_training_positive": 0.11090225563909774,
+    "known_false_menu_candidate": 0.0,
+    "floor": 0.02,
+    "policy": "Reject positive text-only predictions without minimal red/blue artwork evidence; does not create new target detections."
+  },
+  "cursor_rgb_sha256": "5900cff6b0eb90b4845fe70487cd3ec0a2b4da2d115633622e302f15deed8abf",
+  "cursor_focus_sha256": "6fc54ce5c2e1efcc9e2433283324120b1443aed8685371797cf9001aaed1dc2d",
+  "scene_word_templates": [
+    {
+      "file": "scene_need_word.png",
+      "sha256": "aeda827b4a9a33d6bf7540a6dba10abb6591b13b90870ddc67dcc51664decee9",
+      "word": "需要",
+      "purpose": "visible_game_menu_cue_only_not_player_state",
+      "assistant_reference": true
+    }
+  ]
+}

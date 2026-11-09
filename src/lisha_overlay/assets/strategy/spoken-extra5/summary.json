@@ -1,0 +1,78 @@
+{
+  "total": 736281,
+  "named_budget": 5,
+  "guides_included": false,
+  "guide_named_count": 3,
+  "additional_named_budget": 5,
+  "maximum_total_named": 8,
+  "priority": "No strong damage first; then whole-raid one-point, whole-raid main/near, Buff groups, three-circle last.",
+  "modes": {
+    "all": {
+      "families": {
+        "大团原地，少数处理": 394035,
+        "大团一起吃扇": 114350,
+        "大团主点抱团": 50453,
+        "大团主点到旁点": 17285,
+        "按Buff分组": 29168,
+        "三圈重叠": 8043,
+        "超出点名上限": 0,
+        "模型内无解": 122947
+      },
+      "names": {
+        "3": 318314,
+        "4": 80621,
+        "5": 71867,
+        "6": 63637,
+        "7": 46614,
+        "8": 32281
+      },
+      "extra_names": {
+        "0": 318314,
+        "1": 80621,
+        "2": 71867,
+        "3": 63637,
+        "4": 46614,
+        "5": 32281
+      },
+      "candidate_whole_raid": 613330,
+      "selected_whole_raid": 579890,
+      "selected_buff_groups": 33444,
+      "no_brief_candidate": 0,
+      "mathematically_unsolvable": 122947
+    },
+    "circle": {
+      "families": {
+        "大团原地，少数处理": 340485,
+        "大团一起吃扇": 0,
+        "大团主点抱团": 39801,
+        "大团主点到旁点": 13802,
+        "按Buff分组": 24831,
+        "三圈重叠": 8043,
+        "超出点名上限": 0,
+        "模型内无解": 309319
+      },
+      "names": {
+        "3": 255041,
+        "4": 34206,
+        "5": 35301,
+        "6": 37805,
+        "7": 35967,
+        "8": 28642
+      },
+      "extra_names": {
+        "0": 255041,
+        "1": 34206,
+        "2": 35301,
+        "3": 37805,
+        "4": 35967,
+        "5": 28642
+      },
+      "candidate_whole_raid": 426950,
+      "selected_whole_raid": 397855,
+      "selected_buff_groups": 29107,
+      "no_brief_candidate": 0,
+      "mathematically_unsolvable": 309319
+    }
+  },
+  "bulk_directory": "bulk-extra5-003"
+}
