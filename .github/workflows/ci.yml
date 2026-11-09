@@ -1,0 +1,66 @@
+name: Check and package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Check source
+        run: python -m ruff check .
+      - name: Run regression tests
+        run: python -m pytest -q
+      - name: Check bundled runtime
+        run: python main.py --check-runtime
+      - name: Build source and wheel
+        run: python -m build
+      - name: Verify installed wheel
+        shell: pwsh
+        run: |
+          python -m venv .venv-wheel-check
+          $wheel = (Get-ChildItem dist/lisha_overlay-*.whl).FullName
+          .\.venv-wheel-check\Scripts\python.exe -m pip install $wheel
+          if ($LASTEXITCODE -ne 0) { throw 'Wheel installation failed.' }
+          Push-Location $env:RUNNER_TEMP
+          try {
+            $runtime = Start-Process -FilePath "$env:GITHUB_WORKSPACE\.venv-wheel-check\Scripts\lisha-overlay.exe" -ArgumentList '--check-runtime' -WindowStyle Hidden -Wait -PassThru
+            if ($runtime.ExitCode -ne 0) { throw 'Installed wheel runtime check failed.' }
+          } finally {
+            Pop-Location
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-packages-${{ matrix.python-version }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+      - name: Build Windows application
+        if: matrix.python-version == '3.12'
+        shell: pwsh
+        run: ./tools/build.ps1 -Python python
+      - uses: actions/upload-artifact@v4
+        if: matrix.python-version == '3.12'
+        with:
+          name: LishaOverlay-windows-x64
+          path: dist/LishaOverlay/
