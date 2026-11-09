@@ -19,8 +19,8 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -49,7 +49,7 @@ jobs:
           } finally {
             Pop-Location
           }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: python-packages-${{ matrix.python-version }}
           path: |
@@ -59,7 +59,7 @@ jobs:
         if: matrix.python-version == '3.12'
         shell: pwsh
         run: ./tools/build.ps1 -Python python
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         if: matrix.python-version == '3.12'
         with:
           name: LishaOverlay-windows-x64
