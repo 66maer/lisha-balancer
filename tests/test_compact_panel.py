@@ -1,29 +1,48 @@
 """Compact toolbar controls remain available without growing into a dashboard."""
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtWidgets import QAbstractButton, QLabel, QWidget
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtWidgets import QAbstractButton, QLabel, QMessageBox, QWidget
 
+from lisha_overlay import __version__
 from lisha_overlay.panel import ControlPanel
 
 
-def test_author_watermark_fits_header_without_intercepting_mouse_input(qt_app):
+def test_full_title_and_about_button_fit_the_compact_header(qt_app):
     panel = ControlPanel()
     try:
         panel.show()
         qt_app.processEvents()
         header = panel.findChild(QWidget, "dragHandle")
-        watermark = panel.findChild(QLabel, "authorWatermark")
         title = panel.findChild(QLabel, "panelTitle")
 
         assert panel.size() == QSize(232, 108)
-        assert watermark.text() == "华乾·丐箩箩"
-        assert watermark.isVisible()
-        assert watermark.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        assert watermark.focusPolicy() == Qt.FocusPolicy.NoFocus
-        assert header.rect().contains(watermark.geometry())
-        assert title.geometry().right() < watermark.geometry().left()
-        assert watermark.geometry().right() < panel.pin_button.geometry().left()
-        assert watermark.width() >= watermark.fontMetrics().horizontalAdvance(watermark.text())
+        assert panel.windowTitle() == title.text() == "戾煞配平助手"
+        assert title.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        assert title.width() >= title.fontMetrics().horizontalAdvance(title.text())
+        assert panel.about_button.isVisible()
+        assert header.rect().contains(panel.about_button.geometry())
+        assert title.geometry().right() < panel.about_button.geometry().left()
+        assert panel.about_button.geometry().right() < panel.pin_button.geometry().left()
+    finally:
+        panel.hide()
+        panel.deleteLater()
+
+
+def test_about_button_opens_version_and_author_information(qt_app):
+    panel = ControlPanel()
+    texts = []
+
+    def read_and_close_about():
+        for widget in qt_app.topLevelWidgets():
+            if isinstance(widget, QMessageBox):
+                texts.append((widget.windowTitle(), widget.text()))
+                widget.accept()
+
+    try:
+        panel.show()
+        QTimer.singleShot(0, read_and_close_about)
+        panel.about_button.click()
+        assert texts == [("版本信息", f"戾煞配平助手\n版本 {__version__}\n\nby 华乾·丐箩箩")]
     finally:
         panel.hide()
         panel.deleteLater()
@@ -39,7 +58,7 @@ def test_trial_toolbar_hides_settings_test_and_attachment_controls(qt_app):
 
         assert panel.size() == QSize(232, 108)
         assert panel.sizeHint() == QSize(232, 108)
-        names = ("pinButton", "closeButton")
+        names = ("aboutButton", "pinButton", "closeButton")
         controls = [panel.findChild(QAbstractButton, name) for name in names]
         assert all(button is not None and button.isVisible() for button in controls)
         assert [button.x() for button in controls] == sorted(button.x() for button in controls)
@@ -55,7 +74,7 @@ def test_trial_toolbar_hides_settings_test_and_attachment_controls(qt_app):
         assert header.geometry().bottom() < modes.geometry().top()
         assert modes.geometry().bottom() < summary.geometry().top()
         assert panel.rect().contains(summary.geometry())
-        assert len([button for button in panel.findChildren(QAbstractButton) if button.isVisible()]) == 6
+        assert len([button for button in panel.findChildren(QAbstractButton) if button.isVisible()]) == 7
         assert not panel.tank_button.isVisible()
         instruction=panel.findChild(QLabel,'instructionLabel')
         assert summary.geometry().bottom()<instruction.geometry().top()

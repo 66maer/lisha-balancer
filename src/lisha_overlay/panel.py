@@ -13,12 +13,15 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
+
+from . import __version__
 
 __all__ = ["ControlPanel", "PreviewWindow"]
 
@@ -30,7 +33,6 @@ _STYLE = """
 QWidget { color: #e8edf5; font-family: 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif; font-size: 12px; }
 QLabel { background: transparent; border: none; }
 QLabel#panelTitle { color: #d0dde7; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
-QLabel#authorWatermark { color: #768a98; font-size: 9px; }
 QLabel#summaryLabel { color: #9eafbe; font-size: 11px; }
 QPushButton { background: #192432; border: 1px solid #2c3a4e; border-radius: 7px; padding: 6px 8px; font-size: 11px; }
 QPushButton:hover { background: #223145; border-color: #52627b; }
@@ -45,6 +47,7 @@ QToolButton#attachButton[attached="true"] { background: #1a2c34; }
 QToolButton#tankButton { color: #9cabb9; font-size: 11px; font-weight: 700; }
 QToolButton#tankButton[selecting="true"] { color: #f3d38a; background: #3a3222; }
 QToolButton:disabled { color: #52687a; background: transparent; }
+QMessageBox { background: #101923; }
 QWidget#modeSegments { background: #0e1720; border: 1px solid #2c3b48; border-radius: 5px; }
 QToolButton[modeSegment="true"] { color: #8fa3b5; border-radius: 3px; font-size: 11px; }
 QToolButton[modeSegment="true"]:checked { color: #9af0df; background: #25413e; }
@@ -172,6 +175,15 @@ def _icon(kind: str, color: str = "#aebcd0") -> QIcon:
         painter.drawLine(13, 5, 5, 13)
     elif kind == "minus":
         painter.drawLine(5, 10, 13, 10)
+    elif kind == "help":
+        from PySide6.QtGui import QPainterPath
+
+        path = QPainterPath()
+        path.moveTo(5.5, 5.5)
+        path.cubicTo(5.5, 1.5, 12.5, 1.5, 12.5, 5.5)
+        path.cubicTo(12.5, 8, 9, 8, 9, 11)
+        painter.drawPath(path)
+        painter.drawPoint(9, 15)
     painter.end()
     return QIcon(canvas)
 
@@ -238,7 +250,7 @@ class ControlPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setObjectName("controlPanel")
-        self.setWindowTitle("戾煞 · 配平助手")
+        self.setWindowTitle("戾煞配平助手")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setStyleSheet(_STYLE)
@@ -283,17 +295,16 @@ class ControlPanel(QWidget):
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(4)
         header.addWidget(_DragGrip())
-        title = QLabel("戾煞")
+        title = QLabel("戾煞配平助手")
         title.setObjectName("panelTitle")
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         header.addWidget(title)
         header.addStretch(1)
-        watermark = QLabel("华乾·丐箩箩")
-        watermark.setObjectName("authorWatermark")
-        watermark.setTextFormat(Qt.TextFormat.PlainText)
-        watermark.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        watermark.setAccessibleName("作者 华乾·丐箩箩")
-        header.addWidget(watermark)
+        self.about_button = self._tool_button("aboutButton", "help")
+        self.about_button.setToolTip("版本信息与作者")
+        self.about_button.setAccessibleName("版本信息与作者")
+        self.about_button.clicked.connect(self._show_about)
+        header.addWidget(self.about_button)
         self.settings_button = self._tool_button("settingsButton", "settings")
         self.settings_button.setToolTip("设置")
         self.settings_button.clicked.connect(lambda _checked=False: self.settings_requested.emit())
@@ -403,6 +414,11 @@ class ControlPanel(QWidget):
         button.setCheckable(checkable)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         return button
+
+    def _show_about(self) -> None:
+        QMessageBox.about(
+            self, "版本信息", f"戾煞配平助手\n版本 {__version__}\n\nby 华乾·丐箩箩"
+        )
 
     @staticmethod
     def _button(text: str, name: str, signal: Any, icon_kind: str | None = None) -> QPushButton:
@@ -727,7 +743,7 @@ class PreviewWindow(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self.setObjectName("previewWindow")
-        self.setWindowTitle("扫描区域预览 · 戾煞配平")
+        self.setWindowTitle("扫描区域预览 · 戾煞配平助手")
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setStyleSheet(_STYLE + "\nQWidget#previewWindow { background: #101923; }")
         self.resize(760, 540)

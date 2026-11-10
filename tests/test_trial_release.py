@@ -6,6 +6,7 @@ from dataclasses import replace
 from PySide6.QtGui import QImage
 
 from lisha_overlay.analysis import PlayerState
+from lisha_overlay import __version__
 from lisha_overlay.live_strategy import evaluate_current, evaluate_exact
 from lisha_overlay.overlay import MarksOverlay
 from lisha_overlay.solver import simulate_plan
@@ -76,7 +77,7 @@ def test_debug_archive_contains_environment_and_selected_evidence_only(qt_app, t
     environment = json.loads((folder/'environment.json').read_text(encoding='utf8'))
     assert environment['capture']['desktop_recording_visible'] is True
     assert environment['screens'] and environment['hardware']['logical_cpus']
-    assert environment['version'] == '0.5.0'
+    assert environment['version'] == __version__
     (folder/'latest-analysis.json').write_text('{"status":"solved"}', encoding='utf8')
     (folder/'app.log').write_text('test', encoding='utf8')
     (folder/'unrelated.txt').write_text('not a debug artifact', encoding='utf8')

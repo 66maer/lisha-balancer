@@ -1605,7 +1605,7 @@ class OverlayController(QObject):
 
     def _setup_tray(self):
         self.tray = QSystemTrayIcon(self.app.windowIcon(), self)
-        self.tray.setToolTip("戾煞 · 配平助手")
+        self.tray.setToolTip("戾煞配平助手")
         self.tray_menu = QMenu()
         restore = self.tray_menu.addAction("显示工具并恢复操作")
         restore.triggered.connect(self.restore_controls)
@@ -1750,7 +1750,7 @@ def _configure_logging():
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("戾煞配平")
+    app.setApplicationName("戾煞配平助手")
     app.setOrganizationName("LishaBalancer")
     app.setQuitOnLastWindowClosed(False)
     app.setFont(QFont("Microsoft YaHei UI", 9))
