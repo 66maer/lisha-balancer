@@ -14,10 +14,11 @@ import numpy as np
 
 from lisha_overlay.solver import BuffState, IllegalAction, receive_buff
 
-INF = np.int64(10**15)
-RISK = 10**12
-FIFTH_TEAM_ACTION = 10**10
-REPEATED_CIRCLE = 10**8
+INF = np.int64(10**17)
+RISK = 10**14
+TRIPLE_CIRCLE = 10**12
+REPEATED_CIRCLE = 10**10
+FIFTH_TEAM_ACTION = 10**8
 HELPER_ACTION = 10**6
 MELEE_ACTION = 10**4
 TEAM_CHANGE = 1
@@ -126,7 +127,8 @@ def squad_options(values, mode, team):
                 position_cost = participating * (team * 5 + slot)
                 role_cost = (
                     participating * (team == 4) * FIFTH_TEAM_ACTION
-                    + max(0, action % 4 - 1) * REPEATED_CIRCLE
+                    + int(action % 4 == 3) * TRIPLE_CIRCLE
+                    + int(action % 4 == 2) * REPEATED_CIRCLE
                     + helper * HELPER_ACTION
                     + participating * (team in (2, 3)) * MELEE_ACTION
                 )
@@ -140,7 +142,7 @@ def squad_options(values, mode, team):
     return scores, paths
 
 
-def squad_candidates(roster, mode):
+def squad_candidates(roster, mode, tolerance=2):
     """Exact local DP; keep compact team-baseline paths for eight common bodies.
 
     The local merge keeps the least strong damage / fifth-team load / helpers
@@ -183,7 +185,7 @@ def squad_candidates(roster, mode):
     seen = set()
     for body in range(bases):
         for extra_total in range(6):
-            for final in range(-2, 3):
+            for final in range(-tolerance, tolerance + 1):
                 if dp[body, 3, extra_total, final + 25] >= INF:
                     continue
                 guides, extra, difference = 3, extra_total, final + 25
@@ -433,6 +435,21 @@ def compact_text(row):
     return text
 
 
+def command_lines(rows):
+    """Render the assigned recipients in the three fixed command rows."""
+    groups = {'fan': [], 'guide': [], 'circle': []}
+    actions = {'吃扇': '吃扇', '引导': '引导圈', '蹭圈': '蹭单圈',
+               '蹭双圈': '蹭双圈', '蹭三圈': '蹭三圈'}
+    for row in rows:
+        buffs = '、'.join(f"{{{buff['label']}}} × {buff['count']}" for buff in row['buffs'])
+        groups[row['role']].append(f"{buffs} {actions[row['action']]}")
+    return [
+        '，'.join(groups['fan']) or '无需吃扇',
+        '，'.join(groups['guide']) or '引导圈需另排',
+        '，'.join(groups['circle']) or '无需蹭圈',
+    ]
+
+
 def replay(roster, candidate):
     """Replay chronology; generated isolation blocks later buffs, not damage."""
     actions, guides = candidate["actions"], candidate["guides"]
@@ -534,10 +551,12 @@ def quota_selector(group):
     )
 
 
-def build_board(roster, candidate):
+def build_board(roster, candidate, *, tolerance=2):
     timeline = replay(roster, candidate)
-    if not timeline[-1]["counts"]["balanced"]:
+    if abs(timeline[-1]["counts"]["difference"]) > tolerance:
         return None
+    for stage in timeline:
+        stage['counts']['balanced'] = abs(stage['counts']['difference']) <= tolerance
     actions, guides = candidate["actions"], candidate["guides"]
     full = (1 << 25) - 1
     ordinary = full & ~mask_of(guides)
@@ -558,7 +577,6 @@ def build_board(roster, candidate):
     if fan is None:
         return None
     cohorts = []
-    remembered = False
     for hits in range(1, 4):
         target = mask_of(i for i, a in enumerate(actions) if i not in guides and a % 4 == hits)
         selector = (
@@ -566,17 +584,10 @@ def build_board(roster, candidate):
             if quota and quota["code"] == hits
             else compile_selector(roster, after_fan, ordinary, target, allowed, "大团")
         )
-        reference = "after_fan"
-        if selector is None:
-            # Announce and freeze the original cohort BEFORE the fan. Never
-            # silently reuse an obsolete Buff predicate after a state change.
-            selector = compile_selector(roster, initial, ordinary, target, allowed, "大团")
-            reference = "initial"
-            remembered = True
         if selector is None:
             return None
         if target:
-            cohorts.append(dict(hits=hits, reference=reference, selector=selector))
+            cohorts.append(dict(hits=hits, reference='after_fan', selector=selector))
     strong = sum(e["strong"] for stage in timeline for e in stage["events"])
     named = set(fan["named"]) - set(guides)
     for cohort in cohorts:
@@ -590,29 +601,16 @@ def build_board(roster, candidate):
         fan_rows.append(compact_row(roster, initial, fan["selected"], "吃扇", "fan", fan))
     circle_rows = [compact_row(roster, after_fan, guides, "引导", "guide")]
     for cohort in cohorts:
-        reference = cohort["reference"]
-        states = initial if reference == "initial" else after_fan
         row = compact_row(
             roster,
-            states,
+            after_fan,
             cohort["selector"]["selected"],
             ("蹭圈", "蹭双圈", "蹭三圈")[cohort["hits"] - 1],
             "circle",
             cohort["selector"],
-            reference,
+            'after_fan',
         )
         circle_rows.append(row)
-        if reference == "initial":
-            remember_row = compact_row(
-                roster,
-                initial,
-                row["selected"],
-                ("记一圈组", "记双圈组", "记三圈组")[cohort["hits"] - 1],
-                "remember",
-                cohort["selector"],
-                reference,
-            )
-            fan_rows.insert(0, remember_row)
     two = [c for c in cohorts if c["hits"] == 2]
     three = [c for c in cohorts if c["hits"] == 3]
     fan_line = "\n".join(row["text"] for row in fan_rows)
@@ -652,7 +650,7 @@ def build_board(roster, candidate):
         ),
     ]
     score = fan["cost"] + sum(c["selector"]["cost"] for c in cohorts)
-    score += int(bool(fan["selected"])) * 0.7 + bool(two) * 2.5 + bool(three) * 7 + remembered * 8
+    score += int(bool(fan["selected"])) * 0.7 + bool(two) * 2.5 + bool(three) * 7
     score += len(named) * 0.2
     # No optional operation is the easiest instruction if mandatory guides
     # alone preserve balance. Names on guide placement are always separate.
@@ -673,7 +671,7 @@ def build_board(roster, candidate):
         final=final,
         strong_events=strong,
         speech_cost=round(score, 3),
-        remembered_cohort=remembered,
+        remembered_cohort=False,
         quota=quota,
         guide_roles=[
             dict(
@@ -701,8 +699,9 @@ def participant_score(roster, board):
     )
     return (
         board["strong_events"],
+        sum(board['actions'][i] % 4 == 3 for i in helpers),
+        sum(board['actions'][i] % 4 == 2 for i in helpers),
         sum(roster[i]["team"] == 5 for i in actors),
-        sum(max(0, board["actions"][i] % 4 - 1) for i in helpers),
         len(helpers),
         sum(roster[i]["team"] in (3, 4) for i in actors),
         abs(board["final"]["difference"]),
@@ -715,13 +714,13 @@ def participant_score(roster, board):
     )
 
 
-def quota_variants(roster, board):
+def quota_variants(roster, board, *, tolerance=2):
     """Replay each valid volunteer count with fixed, excluded guides."""
     group = board["quota"]
     if not group:
         return []
     variants = []
-    fifth_limit = participant_score(roster, board)[1]
+    fifth_limit = participant_score(roster, board)[3]
     for count in range(1, len(group["eligible"]) + 1):
         actions = [0] * 25
         for index in board["guides"]:
@@ -730,10 +729,10 @@ def quota_variants(roster, board):
             actions[index] = group["code"]
         candidate = dict(actions=actions, guides=board["guides"], extras=[], source=board["source"])
         try:
-            alternative = build_board(roster, candidate)
+            alternative = build_board(roster, candidate, tolerance=tolerance)
         except IllegalAction:
             continue
-        if alternative is None or participant_score(roster, alternative)[1] > fifth_limit:
+        if alternative is None or participant_score(roster, alternative)[3] > fifth_limit:
             continue
         variants.append(dict(count=count, board=alternative))
     if not variants:
@@ -760,7 +759,7 @@ def quota_variants(roster, board):
     return variants
 
 
-def team_variants(roster, board):
+def team_variants(roster, board, *, tolerance=2):
     """Verify interchangeable full squads, relocating the three guides too."""
     if board["fan_selector"]["selected"] or len(board["cohorts"]) != 1 or board["extra_named_count"]:
         return []
@@ -787,7 +786,7 @@ def team_variants(roster, board):
         for index in guides:
             actions[index] = 1
         candidate = dict(actions=actions, guides=guides, extras=[], source=board["source"])
-        alternative = build_board(roster, candidate)
+        alternative = build_board(roster, candidate, tolerance=tolerance)
         if (
             alternative is not None
             and alternative["strong_events"] <= board["strong_events"]
@@ -806,7 +805,7 @@ def team_variants(roster, board):
     return variants
 
 
-def solve_steps(roster, mode, catalogue):
+def solve_steps(roster, mode, catalogue, *, tolerance=2):
     started = perf_counter()
     if mode not in ("all", "circle"):
         raise ValueError("仅支持扇＋圈、仅圈。")
@@ -827,17 +826,17 @@ def solve_steps(roster, mode, catalogue):
     initial_difference = sum(player["value"] > 0 for player in roster) - sum(
         player["value"] < 0 for player in roster
     )
-    if abs(initial_difference) <= 2 and len(neutral_guides) == 3:
+    if abs(initial_difference) <= tolerance and len(neutral_guides) == 3:
         actions = [int(i in neutral_guides) for i in range(25)]
         candidates = [dict(actions=actions, guides=neutral_guides, extras=[], source="balanced")]
     else:
-        candidates = list(squad_candidates(roster, mode))
+        candidates = list(squad_candidates(roster, mode, tolerance))
         candidates.append(fallback)
     best = None
     checked = 0
     for candidate in candidates:
         try:
-            board = build_board(roster, candidate)
+            board = build_board(roster, candidate, tolerance=tolerance)
         except IllegalAction:
             continue
         if board is None:
@@ -856,8 +855,8 @@ def solve_steps(roster, mode, catalogue):
             elapsed_ms=round((perf_counter() - started) * 1000, 1),
         )
     board = best[1]
-    counts = quota_variants(roster, board)
-    variants = [] if counts else team_variants(roster, board)
+    counts = quota_variants(roster, board, tolerance=tolerance)
+    variants = [] if counts else team_variants(roster, board, tolerance=tolerance)
     return dict(
         status="solved",
         mode=mode,

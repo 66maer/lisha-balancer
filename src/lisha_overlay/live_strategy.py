@@ -5,9 +5,10 @@ from dataclasses import replace
 from pathlib import Path
 
 from .analysis import AnalysisResult, PlanAnnotation, evaluate
+from .difficulty import SAFE_TOLERANCE
 from .solver import BuffState, PlayerAction, SolverPlan, receive_buff, simulate_plan
 from .spoken_catalogue import SpokenCatalogue
-from .step_strategy import compact_row, solve_steps
+from .step_strategy import command_lines, compact_row, solve_steps
 from .strategy_catalogue import Catalogue
 
 
@@ -17,7 +18,7 @@ def prepare_live_strategy():
     return SpokenCatalogue(Catalogue(base), base)
 
 
-def _reviewed_result(players, mode, counts, red, black, *, prefer_exact=False):
+def _reviewed_result(players, mode, counts, red, black, *, prefer_exact=False, tolerance=2):
     expected = {f"g{team}p{slot}" for team in range(1, 6) for slot in range(1, 6)}
     if (
         mode not in ("all", "circle")
@@ -29,7 +30,9 @@ def _reviewed_result(players, mode, counts, red, black, *, prefer_exact=False):
         dict(key=p.player_key, value=0 if p.color == "none" else p.stacks * (-1 if p.color == "black" else 1))
         for p in players
     ]
-    data = solve_steps(roster, mode, prepare_live_strategy())
+    data = solve_steps(roster, mode, prepare_live_strategy(), tolerance=tolerance)
+    if data['status'] == 'complex':
+        return None
     strategy = dict(
         policy="reviewed_few_participants",
         preference="exact" if prefer_exact else "minimum",
@@ -74,7 +77,7 @@ def _reviewed_result(players, mode, counts, red, black, *, prefer_exact=False):
         command_style=True,
         spoken_policy=True,
     )
-    checked = simulate_plan(players, plan)
+    checked = simulate_plan(players, plan, tolerance=tolerance)
     if (
         not checked.valid
         or checked.red_count != board["final"]["red"]
@@ -94,7 +97,7 @@ def _reviewed_result(players, mode, counts, red, black, *, prefer_exact=False):
                     "center" if action.player_key in centers else "helper",
                 )
             )
-    neutral_balance = abs(red - black) <= 2 and all(
+    neutral_balance = abs(red - black) <= tolerance and all(
         not action.fan and action.player_key in centers for action in actions
     )
     if neutral_balance:
@@ -139,30 +142,31 @@ def _reviewed_result(players, mode, counts, red, black, *, prefer_exact=False):
         checked.difference,
         current_red=red,
         current_black=black,
-        instruction=board["prompt"],
+        instruction='\n'.join(command_lines([row for cue in cues for row in cue['rows']])),
         balanced=neutral_balance,
         strategy=strategy,
     )
 
 
-def _minimum(players, mode, counts, red, black):
-    return _reviewed_result(players, mode, counts, red, black)
-
-
-def _exact(players, mode, counts, red, black):
-    return _reviewed_result(players, mode, counts, red, black, prefer_exact=True)
-
-
-def _evaluate(players, mode, provider):
+def _evaluate(players, mode, *, prefer_exact=False, difficulty='normal'):
     players = list(players)
+    tolerance = SAFE_TOLERANCE[difficulty]
+
+    def provider(snapshot, selected_mode, counts, red, black):
+        return _reviewed_result(snapshot, selected_mode, counts, red, black,
+                                prefer_exact=prefer_exact, tolerance=tolerance)
+
     result = evaluate(
-        players, mode, snapshot_stage="after_tank", current_snapshot=True, current_strategy=provider
+        players, mode, snapshot_stage="after_tank", current_snapshot=True, current_strategy=provider,
+        tolerance=tolerance, avoid_overlap=True,
     )
     if result.strategy or result.status not in ("solved", "no_solution"):
         return result
     result.strategy = dict(policy="verified_extended_state_fallback")
     result.reference = True
-    result.details = "当前含死亡、已有隔绝或四层，使用扩展状态后备验算。\n" + result.details
+    result.details = "使用扩展状态后备验算。\n" + result.details
+    if result.balanced and result.plan is None:
+        result.instruction = '无需吃扇\n引导圈需另排\n无需蹭圈'
     if result.plan is not None:
         actions = tuple(
             replace(action, circles=(1, 3))
@@ -171,7 +175,7 @@ def _evaluate(players, mode, provider):
             for action in result.plan.actions
         )
         result.plan = replace(result.plan, actions=actions, command_style=True, spoken_policy=True)
-        checked = simulate_plan(players, result.plan)
+        checked = simulate_plan(players, result.plan, tolerance=tolerance)
         if not checked.valid:
             raise ValueError("扩展状态站位复核失败：" + checked.reason)
         if not result.balanced:
@@ -224,15 +228,15 @@ def _evaluate(players, mode, provider):
             for role, action, selected in groups
             if selected
         ]
-        result.instruction = "\n".join(row["text"] for row in rows)
+        result.instruction = '\n'.join(command_lines(rows))
         result.strategy["rows"] = rows
         result.details += "\n统一站位：1主点、2单走、3旁点。双圈用1与3交集，三圈用三角交集。"
     return result
 
 
-def evaluate_current(players, mode="all", *, snapshot_stage="after_tank"):
-    return _evaluate(players, mode, _minimum)
+def evaluate_current(players, mode="all", *, snapshot_stage="after_tank", difficulty='normal'):
+    return _evaluate(players, mode, difficulty=difficulty)
 
 
-def evaluate_exact(players, mode="all", *, snapshot_stage="after_tank"):
-    return _evaluate(players, mode, _exact)
+def evaluate_exact(players, mode="all", *, snapshot_stage="after_tank", difficulty='normal'):
+    return _evaluate(players, mode, prefer_exact=True, difficulty=difficulty)

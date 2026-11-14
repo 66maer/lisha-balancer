@@ -37,3 +37,18 @@ def test_mode_stage_reset_and_bounded_single_entry_cache(monkeypatch):
     cache.evaluate(players,'circle');cache.evaluate(players,'circle',snapshot_stage='after_tank')
     cache.evaluate(players);assert len(calls)==4  # Earlier signatures are not retained.
     cache.reset();cache.evaluate(players);assert len(calls)==5
+
+
+def test_difficulty_change_invalidates_the_cached_plan(monkeypatch):
+    calls = []
+    def solve(players, mode, **kwargs):
+        calls.append(kwargs)
+        return AnalysisResult('computed')
+    monkeypatch.setattr(module, 'evaluate', solve)
+    cache = AnalysisCache()
+    players = roster()
+    cache.evaluate(players)
+    cache.evaluate(players, difficulty='heroic')
+    assert not cache.last_hit and calls[-1]['difficulty'] == 'heroic'
+    cache.evaluate(players, difficulty='heroic')
+    assert cache.last_hit and len(calls) == 2

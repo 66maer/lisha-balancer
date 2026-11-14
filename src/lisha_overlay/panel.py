@@ -7,8 +7,8 @@ from html import escape
 import re
 from typing import Any
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QCloseEvent, QIcon, QImage, QMouseEvent, QPainter, QPen, QPixmap
+from PySide6.QtCore import QBuffer, QEvent, QIODevice, QPoint, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QCloseEvent, QIcon, QImage, QMouseEvent, QPainter, QPen, QPixmap, QTextDocument
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -16,12 +16,16 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QStyle,
+    QStyleOptionToolButton,
+    QStylePainter,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from . import __version__
+from .difficulty import SAFE_TOLERANCE, settlement_level
 
 __all__ = ["ControlPanel", "PreviewWindow"]
 
@@ -226,10 +230,90 @@ class _DragGrip(QWidget):
                 painter.drawEllipse(QRectF(x - 0.7, y - 0.7, 1.4, 1.4))
 
 
+def _buff_badge(color: str, stacks: int, *, plus: bool = False) -> QPixmap:
+    canvas = QPixmap(32, 32)
+    canvas.setDevicePixelRatio(2)
+    canvas.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QPen(QColor('#de6277' if color == 'red' else '#6f7c89'), 0.7))
+    painter.setBrush(QColor('#b8233f' if color == 'red' else '#12171d'))
+    painter.drawEllipse(QRectF(0.5, 0.5, 15, 15))
+    font = painter.font()
+    font.setPixelSize(11)
+    font.setBold(True)
+    painter.setFont(font)
+    painter.setPen(QColor('#ffffff'))
+    painter.drawText(QRectF(0, 0, 16, 16), Qt.AlignmentFlag.AlignCenter, str(stacks))
+    if plus:
+        font.setPixelSize(7)
+        painter.setFont(font)
+        painter.drawText(QRectF(10.8, 2, 5, 10), Qt.AlignmentFlag.AlignCenter, '+')
+    painter.end()
+    return canvas
+
+
+def _image_source(image: QPixmap) -> str:
+    buffer = QBuffer()
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    image.save(buffer, 'PNG')
+    return 'data:image/png;base64,' + bytes(buffer.data().toBase64()).decode('ascii')
+
+
+class _CommandLabel(QLabel):
+    """Fit one rich command inside its fixed row without wrapping."""
+
+    def __init__(self):
+        super().__init__()
+        self.document = QTextDocument(self)
+        self.document.setDocumentMargin(0)
+        self.setFixedHeight(22)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setStyleSheet('font-size: 11px; font-weight: 700;')
+
+    def setText(self, text: str) -> None:
+        super().setText(text)
+        self.document.setDefaultFont(self.font())
+        color = self.palette().windowText().color().name()
+        self.document.setHtml(f'<span style="color:{color}">{text}</span>')
+        self.update()
+
+    def paintEvent(self, event: Any) -> None:
+        bounds = self.contentsRect()
+        size = self.document.size()
+        scale = min(1., bounds.width() / max(1., size.width()), bounds.height() / max(1., size.height()))
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.translate(bounds.left(), bounds.top() + (bounds.height() - size.height() * scale) / 2)
+        painter.scale(scale, scale)
+        self.document.drawContents(painter)
+
+
+class _DifficultyButton(QToolButton):
+    def paintEvent(self, event: Any) -> None:
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+        option.text = ''
+        painter = QStylePainter(self)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ToolButton, option)
+        font = self.font()
+        font.setPixelSize(11)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor('#64788b' if self.isChecked() else '#9af0df'))
+        painter.drawText(QRect(1, 0, 20, self.height()), Qt.AlignmentFlag.AlignCenter, '普')
+        painter.setPen(QColor('#64788b'))
+        painter.drawText(QRect(19, 0, 10, self.height()), Qt.AlignmentFlag.AlignCenter, '/')
+        painter.setPen(QColor('#f0cd7b' if self.isChecked() else '#64788b'))
+        painter.drawText(QRect(27, 0, 20, self.height()), Qt.AlignmentFlag.AlignCenter, '英')
+
+
 class ControlPanel(QWidget):
-    """Three-row toolbar; state and native window behavior belong to the controller."""
+    """Compact toolbar; state and native window behavior belong to the controller."""
 
     mode_changed = Signal(str)
+    difficulty_changed = Signal(str)
     test_toggled = Signal(bool)
     pin_toggled = Signal(bool)
     grid_requested = Signal()
@@ -254,9 +338,10 @@ class ControlPanel(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setStyleSheet(_STYLE)
-        self.setFixedSize(232, 108)
+        self.setFixedSize(360, 178)
         self._drag_offset: QPoint | None = None
         self._mode = "all"
+        self._difficulty = 'normal'
         self._test_mode = False
         self._pinned = True
         self._attached = False
@@ -273,10 +358,11 @@ class ControlPanel(QWidget):
         self._summary_text = "待识别"
         self._summary_error = False
         self._summary_statistics = None
-        self._summary_balanced = False
         self._summary_reference = False
+        self._buff_counts = None
         self._instruction_text = ''
-        self._instruction_compact = ''
+        self._command_lines = ['', '', '']
+        self._final_statistics = None
         self._status_detail = ""
         self._hotkey_status = ""
         self._lock_shortcut = "Ctrl+Alt+L"
@@ -350,6 +436,14 @@ class ControlPanel(QWidget):
             self.mode_buttons[mode] = button
             segment_layout.addWidget(button, 1)
         segment_layout.addSpacing(3)
+        self.difficulty_button = _DifficultyButton()
+        self.difficulty_button.setObjectName('difficultyButton')
+        self.difficulty_button.setText('普/英')
+        self.difficulty_button.setCheckable(True)
+        self.difficulty_button.setFixedSize(48, 20)
+        self.difficulty_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.difficulty_button.toggled.connect(self._difficulty_clicked)
+        segment_layout.addWidget(self.difficulty_button)
         self.start_button = self._tool_button("analysisStartButton", "play")
         self.start_button.setToolTip("开始识别")
         self.start_button.clicked.connect(lambda _checked=False: self.analysis_toggled.emit())
@@ -370,22 +464,98 @@ class ControlPanel(QWidget):
         self.tank_button.hide()
         layout.addWidget(segments)
 
+        self._buff_sources = {}
+        for color in ('red', 'black'):
+            for stacks in range(1, 6):
+                key = f'{color}{stacks}'
+                icon = _buff_badge(color, stacks)
+                self._buff_sources[key] = _image_source(icon)
+        check = QPixmap(20, 20)
+        check.setDevicePixelRatio(2)
+        check.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(check)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor('#087f45'), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(2, 5, 4, 7)
+        painter.drawLine(4, 7, 8, 2)
+        painter.end()
+        self._check_source = _image_source(check)
+
+        self._summary_area = QWidget()
+        self._summary_area.setObjectName('summaryArea')
+        self._summary_area.setFixedHeight(40)
+        summary_layout = QHBoxLayout(self._summary_area)
+        summary_layout.setContentsMargins(3, 2, 3, 2)
+        summary_layout.setSpacing(6)
+        status_rows = QVBoxLayout()
+        status_rows.setSpacing(0)
+        summary_row = QHBoxLayout()
+        summary_row.setSpacing(2)
         self._summary_label = QLabel()
         self._summary_label.setObjectName("summaryLabel")
         self._summary_label.setTextFormat(Qt.TextFormat.PlainText)
         self._summary_label.setFixedHeight(18)
         self._summary_label.setMinimumWidth(0)
         self._summary_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        layout.addWidget(self._summary_label)
-        self._instruction_label = QLabel()
-        self._instruction_label.setObjectName('instructionLabel')
-        self._instruction_label.setTextFormat(Qt.TextFormat.PlainText)
-        self._instruction_label.setFixedHeight(18)
-        self._instruction_label.setWordWrap(True)
-        self._instruction_label.setMinimumWidth(0)
-        self._instruction_label.setStyleSheet('color: #dce6ed; font-size: 10px; font-weight: 700;')
-        self._instruction_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        layout.addWidget(self._instruction_label)
+        summary_row.addWidget(self._summary_label, 1)
+        self._reference_label = QLabel('参考')
+        self._reference_label.setObjectName('referenceLabel')
+        self._reference_label.setStyleSheet('color: #8a5700; font-size: 11px; font-weight: 700;')
+        self._reference_label.hide()
+        summary_row.addWidget(self._reference_label, 0, Qt.AlignmentFlag.AlignRight)
+        status_rows.addLayout(summary_row)
+        self._buff_counts_row = QWidget()
+        self._buff_counts_row.setObjectName('buffCountsRow')
+        self._buff_counts_row.setFixedHeight(18)
+        buffs_layout = QHBoxLayout(self._buff_counts_row)
+        buffs_layout.setContentsMargins(0, 0, 0, 0)
+        buffs_layout.setSpacing(6)
+        self._buff_count_labels = {}
+        for color in ('red', 'black'):
+            for stacks in range(1, 4):
+                key = f'{color}{stacks}'
+                group = QHBoxLayout()
+                group.setSpacing(2)
+                icon_label = QLabel()
+                icon_label.setFixedSize(16, 16)
+                icon_label.setPixmap(_buff_badge(color, stacks, plus=stacks == 3))
+                count_label = QLabel('—')
+                count_label.setObjectName(f'{key}Count')
+                count_label.setFixedWidth(14)
+                group.addWidget(icon_label)
+                group.addWidget(count_label)
+                buffs_layout.addLayout(group)
+                self._buff_count_labels[key] = count_label
+        buffs_layout.addStretch(1)
+        status_rows.addWidget(self._buff_counts_row)
+        summary_layout.addLayout(status_rows, 1)
+        separator = QWidget()
+        separator.setObjectName('settlementSeparator')
+        separator.setFixedSize(1, 30)
+        separator.setStyleSheet('background: #b5c1cb;')
+        summary_layout.addWidget(separator)
+        self._result_label = QLabel()
+        self._result_label.setObjectName('settlementLabel')
+        self._result_label.setFixedSize(88, 36)
+        self._result_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._result_label.setTextFormat(Qt.TextFormat.RichText)
+        self._result_label.setStyleSheet('font-size: 10px;')
+        summary_layout.addWidget(self._result_label)
+        layout.addWidget(self._summary_area)
+        self._command_area = QWidget()
+        self._command_area.setObjectName('commandArea')
+        self._command_area.setFixedHeight(66)
+        command_rows = QVBoxLayout(self._command_area)
+        command_rows.setContentsMargins(0, 0, 0, 0)
+        command_rows.setSpacing(0)
+        self._instruction_labels = []
+        for name in ('instructionLabel', 'guideInstructionLabel', 'circleInstructionLabel'):
+            label = _CommandLabel()
+            label.setObjectName(name)
+            command_rows.addWidget(label)
+            self._instruction_labels.append(label)
+        self._instruction_label = self._instruction_labels[0]
+        layout.addWidget(self._command_area)
 
         # Existing capture/save callers may still address this attribute. It is
         # deliberately outside the layout and never exposed on the toolbar.
@@ -396,6 +566,7 @@ class ControlPanel(QWidget):
         self.save_button.clicked.connect(lambda _checked=False: self.save_requested.emit())
 
         self.set_mode("all")
+        self.set_difficulty('normal')
         self.set_test_state(False)
         self.set_pinned(True)
         self.set_attached(False)
@@ -458,6 +629,19 @@ class ControlPanel(QWidget):
             button.setChecked(value == self._mode)
         self._mode_group.setExclusive(True)
 
+    def _difficulty_clicked(self, heroic: bool) -> None:
+        self.set_difficulty('heroic' if heroic else 'normal')
+        self.difficulty_changed.emit(self._difficulty)
+
+    def set_difficulty(self, difficulty: str) -> None:
+        self._difficulty = difficulty if difficulty in SAFE_TOLERANCE else 'normal'
+        self._check_silently(self.difficulty_button, self._difficulty == 'heroic')
+        name = '英雄' if self._difficulty == 'heroic' else '普通'
+        self.difficulty_button.setToolTip(f'当前{name}，安全人数差 ≤ {SAFE_TOLERANCE[self._difficulty]}；点击切换普/英')
+        self.difficulty_button.setAccessibleName(f'难度切换，当前{name}')
+        self.difficulty_button.update()
+        self._render_summary()
+
     def set_grid_busy(self, busy: bool) -> None:
         self._grid_busy = bool(busy)
         self._sync_selection_actions()
@@ -487,6 +671,7 @@ class ControlPanel(QWidget):
         self.start_button.setToolTip('停止识别' if self._analysis_active else
                                     '开始识别' if self._grid_ready else '请先校准网格')
         self.tank_button.setEnabled(not self._grid_busy)
+        self.difficulty_button.setEnabled(analyze_enabled)
         for button in self.mode_buttons.values():
             button.setEnabled(analyze_enabled)
 
@@ -513,36 +698,29 @@ class ControlPanel(QWidget):
         self._summary_text = str(text or "待识别").replace("\n", " ").strip()
         self._summary_error = bool(error)
         self._summary_statistics = None
-        self._summary_balanced = False
         self._summary_reference = False
-        self._instruction_text = self._instruction_compact = ''
+        self._buff_counts = None
+        self._instruction_text = ''
+        self._command_lines = ['', '', '']
+        self._final_statistics = None
         self._render_summary()
         self._refresh_tooltip()
 
     def set_result(self, result) -> None:
         self.set_summary(result.summary, result.status == 'no_solution')
         self._summary_reference = result.reference
+        self._buff_counts = result.buff_counts
+        self._instruction_text = result.instruction
+        lines = result.instruction.splitlines()
+        self._command_lines = (lines + ['', '', ''])[:3]
+        if len(lines) > 3:
+            self._command_lines[2] = '，'.join(lines[2:])
+        if result.final_red is not None and result.final_black is not None:
+            self._final_statistics = (result.final_red, result.final_black)
         if result.current_red is not None and result.current_black is not None:
             self._summary_statistics = (result.current_red, result.current_black)
-            self._summary_balanced = result.balanced
-            self._instruction_text = result.instruction
-            self._instruction_compact = result.instruction
-            if result.plan is not None and result.plan.command_style and not result.strategy:
-                self._instruction_compact='复杂解，需按标记补位（详情）'
-            if result.plan is not None and not result.balanced and not result.plan.command_style:
-                actions=result.plan.actions
-                fans=sum(a.fan for a in actions)
-                helpers=sum(bool(a.circles) and a.player_key not in result.plan.centers for a in actions)
-                repeated=sum(len(a.circles)>1 for a in actions)
-                parts=([f'{fans}吃扇'] if fans else []) + [f'{len(result.plan.centers)}排圈']
-                if helpers:parts.append(f'{helpers}贴圈')
-                if repeated:parts.append(f'重叠{repeated}')
-                self._instruction_compact='；'.join(parts)
-            self._render_summary()
-            self._refresh_tooltip()
-        else:
-            self._render_summary()
-            self._refresh_tooltip()
+        self._render_summary()
+        self._refresh_tooltip()
 
     def _render_summary(self) -> None:
         if not hasattr(self, "_summary_label"):
@@ -550,39 +728,65 @@ class ControlPanel(QWidget):
         if self._summary_statistics is not None:
             red,black=self._summary_statistics
             delta=red-black
-            difference=f'{delta:+d}' if delta else '0'
-            colour='#b8233f' if delta>0 else '#12171d' if delta<0 else '#52616c'
             self._summary_label.setTextFormat(Qt.TextFormat.RichText)
-            self._summary_label.setStyleSheet('background: #dce4e9; border-radius: 3px; padding: 0px 3px; font-size: 11px;')
-            balanced='&nbsp;&nbsp;<b style="color:#087f45">平衡</b>' if self._summary_balanced else ''
-            reference='&nbsp;&nbsp;<b style="color:#8a5700">参考</b>' if self._summary_reference else ''
+            self._summary_area.setStyleSheet('QWidget#summaryArea { background: #dce4e9; border-radius: 3px; }')
+            self._summary_label.setStyleSheet('font-size: 11px;')
             self._summary_label.setText(f'<b style="color:#b8233f">红 {red}</b>&nbsp;&nbsp;'
                 f'<b style="color:#12171d">黑 {black}</b>&nbsp;&nbsp;'
-                f'<b style="color:{colour}">差 {difference}</b>'+balanced+reference)
+                + self._difference_html(delta))
         else:
+            self._summary_area.setStyleSheet('')
             self._summary_label.setTextFormat(Qt.TextFormat.PlainText)
             color = "#f29a9e" if self._summary_error else (_YELLOW if self._test_mode else "#a8bccb")
             self._summary_label.setStyleSheet(f"color: {color}; font-size: 11px;")
             available = max(1, self._summary_label.width())
             self._summary_label.setText(self._summary_label.fontMetrics().elidedText(
-                self._summary_text+(' · 参考' if self._summary_reference else ''), Qt.TextElideMode.ElideRight, available))
-        if hasattr(self,'_instruction_label'):
-            label=self._instruction_label
-            text=self._instruction_text
-            needed=label.fontMetrics().boundingRect(QRect(0,0,max(1,label.width()),1000),
-                Qt.TextFlag.TextWordWrap,text).height()
-            if needed>72:
-                text=self._instruction_compact
-                needed=min(72, needed)
-            height=max(18, min(72, ((needed+17)//18)*18))
-            label.setFixedHeight(height)
-            rich = escape(text).replace('\n', '<br>')
-            rich = re.sub(r'\[(红\d+(?:×\d+)?)\]', r'<span style="color:#ff9299">[\1]</span>', rich)
-            rich = re.sub(r'\[(黑\d+(?:×\d+)?)\]', r'<span style="color:#c0b7fa">[\1]</span>', rich)
-            label.setTextFormat(Qt.TextFormat.RichText)
-            label.setText(rich)
-            label.setStyleSheet(f"color: {'#f29a9e' if self._summary_error else '#dce6ed'}; font-size: 10px; font-weight: 700;")
-            if self.height()!=90+height:self.setFixedHeight(90+height)
+                self._summary_text, Qt.TextElideMode.ElideRight, available))
+        self._reference_label.setVisible(self._summary_reference)
+        self._reference_label.setStyleSheet(
+            f"color: {'#8a5700' if self._summary_statistics is not None else _YELLOW}; font-size: 11px; font-weight: 700;"
+        )
+        for key, label in self._buff_count_labels.items():
+            count = self._buff_counts.get(key, 0) if self._buff_counts is not None else None
+            if self._buff_counts is not None and key.endswith('3'):
+                count = sum(self._buff_counts.get(f'{key[:-1]}{stacks}', 0) for stacks in range(3, 6))
+            label.setText(str(count) if count is not None else '—')
+            label.setStyleSheet(
+                f"color: {'#26333e' if self._summary_statistics is not None else '#a8bccb'}; font-size: 11px;"
+            )
+        if hasattr(self, '_instruction_labels'):
+            color = '#f29a9e' if self._summary_error else '#dce6ed'
+            for label, text in zip(self._instruction_labels, self._command_lines):
+                label.setStyleSheet(f'color: {color}; font-size: 11px; font-weight: 700;')
+                label.setText(self._instruction_html(text))
+            final = '<span style="color:#52616c; font-size:9px">处理后</span>'
+            if self._final_statistics is None:
+                final += '<br><span style="color:#52616c">—</span>'
+            else:
+                red, black = self._final_statistics
+                final += (f' <b style="color:#b8233f">红 {red}</b> <b style="color:#12171d">黑 {black}</b><br>'
+                          + self._difference_html(red - black))
+            self._result_label.setText(final)
+
+    def _difference_html(self, difference: int) -> str:
+        level = settlement_level(difference, self._difficulty)
+        color = '#b8233f' if difference > 0 else '#12171d'
+        mark = {'safe': f'<img src="{self._check_source}" width="10" height="10" alt="✓" style="vertical-align:middle" />',
+                'danger': '<b style="color:#c37c00">危</b>',
+                'fatal': '<b style="color:#b8233f">死</b>'}[level]
+        signed = f'{difference:+d}' if difference else '0'
+        return f'<b style="color:{color}">差 {signed}</b>&nbsp;{mark}'
+
+    def _instruction_html(self, text: str) -> str:
+        def badge(match):
+            color, stacks, count = match.groups()
+            digit = int(stacks) if stacks.isdecimal() else '一二三四五'.index(stacks) + 1
+            key = f"{'red' if color == '红' else 'black'}{digit}"
+            return (f'<img src="{self._buff_sources[key]}" width="16" height="16" style="vertical-align:middle" />'
+                    + (f' × {count[1:]}' if count else ''))
+
+        rich = escape(text).replace('\n', '<br>')
+        return re.sub(r'[\[{｛](红|黑)([1-5一二三四五])(×\d+)?[\]}｝]', badge, rich)
 
     def set_capture_state(self, running: bool) -> None:
         self._running = bool(running)
@@ -668,11 +872,13 @@ class ControlPanel(QWidget):
         tooltip = "\n".join(details)
         self.setToolTip(tooltip)
         self._summary_label.setToolTip(tooltip)
-        self._instruction_label.setToolTip(tooltip)
+        for label in self._instruction_labels:
+            label.setToolTip(tooltip)
+        self._result_label.setToolTip(tooltip)
         self._header.setToolTip("拖动提示面板\n" + tooltip)
 
     def sizeHint(self) -> QSize:
-        return QSize(232, self.height())
+        return QSize(360, 178)
 
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)

@@ -119,7 +119,7 @@ def _states(players: Sequence[PlayerState]) -> dict[str, BuffState]:
 
 
 def simulate_plan(players: Sequence[PlayerState], plan: SolverPlan,
-                  *, require_weak: bool = True) -> SimulationResult:
+                  *, require_weak: bool = True, tolerance: int = 2) -> SimulationResult:
     """Independently replay the full stage sequence and verify every instruction."""
     try:
         if plan.mode not in ("all", "fan", "circle") or plan.snapshot_stage not in ("before_tank", "after_tank"):
@@ -201,8 +201,8 @@ def simulate_plan(players: Sequence[PlayerState], plan: SolverPlan,
 
         red = sum(state.alive and state.value > 0 for state in states.values())
         black = sum(state.alive and state.value < 0 for state in states.values())
-        if require_weak and abs(red - black) > 2:
-            raise IllegalAction("最终赤幽持有人数差仍超过二，未达到弱结算。")
+        if require_weak and abs(red - black) > tolerance:
+            raise IllegalAction(f"最终赤幽持有人数差仍超过{tolerance}，未达到安全结算。")
         return SimulationResult(True, final_states=states, red_count=red, black_count=black,
                                 weak_cancellations=weak, strong_cancellations=strong)
     except (IllegalAction, KeyError) as error:
@@ -223,9 +223,11 @@ class _Option:
 
 
 def _options(state: BuffState, *, tank: bool, mode: Mode, current_policy: bool = False,
-             preferred_action: tuple[bool,int] | None = None) -> tuple[_Option, ...]:
+             preferred_action: tuple[bool,int] | None = None,
+             avoid_overlap: bool = False) -> tuple[_Option, ...]:
     if not state.alive:
-        return (_Option(False, 0, state, (0,) * (11 if preferred_action is not None else 10), (1, 1, 1)),)
+        cost_size = 10 + int(current_policy and avoid_overlap) + int(preferred_action is not None)
+        return (_Option(False, 0, state, (0,) * cost_size, (1, 1, 1)),)
     options = {}
     for fan in (False, True) if mode != "circle" and not tank else (False,):
         try:
@@ -265,6 +267,8 @@ def _options(state: BuffState, *, tank: bool, mode: Mode, current_policy: bool =
                 # do not add optional actions merely to clear more Buffs.
                 cost = (strong, cost[1], cost[6], cost[5], cost[7], cost[0],
                         cost[4], cost[8], cost[9], cost[3])
+                if avoid_overlap:
+                    cost = (cost[0], int(hits == 3), int(hits == 2), *cost[1:3], *cost[4:])
             if preferred_action is not None:
                 cost = (int((fan,hits)!=preferred_action),) + cost
             preference = (int(after_fan.state.value >= 0),
@@ -281,7 +285,8 @@ def _options(state: BuffState, *, tank: bool, mode: Mode, current_policy: bool =
 def solve(players: Sequence[PlayerState], mode: Mode = "all", *,
           snapshot_stage: Stage = "before_tank", allow_missing_tank: bool = False,
           current_snapshot: bool = False, preferred_actions: dict[str,tuple[bool,int]] | None = None,
-          fixed_centers: tuple[str,str,str] | None = None) -> SearchResult:
+          fixed_centers: tuple[str,str,str] | None = None,
+          tolerance: int = 2, avoid_overlap: bool = False) -> SearchResult:
     """Find a weak-settlement plan in O(players × difference × 4 × options).
 
     The DP tracks final red-minus-black count and up to three available
@@ -314,7 +319,7 @@ def solve(players: Sequence[PlayerState], mode: Mode = "all", *,
     except IllegalAction as error:
         return SearchResult(None, None, "一式前状态无法安全推进：" + str(error))
 
-    zero = (0,) * (12 if preferred_actions is not None else 11)
+    zero = (0,) * (11 + int(current_snapshot and avoid_overlap) + int(preferred_actions is not None))
     # Neutral isolated carriers must occupy a center rather than a helper slot.
     # Track their number separately so cap(eligible, 3) cannot hide a fourth one.
     # (difference, eligible-centers, forced-centers): (cost, player-options)
@@ -323,7 +328,8 @@ def solve(players: Sequence[PlayerState], mode: Mode = "all", *,
     for index, player in enumerate(players):
         options = _options(initial[player.player_key], tank=player.player_key == tank_key,
                            mode=mode, current_policy=current_snapshot,
-                           preferred_action=preferred_actions.get(player.player_key,(False,0)) if preferred_actions is not None else None)
+                           preferred_action=preferred_actions.get(player.player_key,(False,0)) if preferred_actions is not None else None,
+                           avoid_overlap=avoid_overlap)
         if preferred_actions is not None:
             options=tuple(o for o in options if o.hits<=2)
         if fixed_centers is not None:
@@ -350,13 +356,13 @@ def solve(players: Sequence[PlayerState], mode: Mode = "all", *,
 
     candidates = []
     for (difference, centers, _forced_count), (cost, path) in dp.items():
-        if centers == 3 and abs(difference) <= 2:
+        if centers == 3 and abs(difference) <= tolerance:
             prefix=6 if preferred_actions is not None else 5
             score = ((*cost[:prefix], abs(difference), *cost[prefix:]) if current_snapshot
                      else (abs(difference), *cost))
             candidates.append((score, path))
     if not candidates:
-        return SearchResult(None, None, "在当前模式允许的扇形与三圈站位内，未找到人数差不超过二的方案。", explored)
+        return SearchResult(None, None, f"在当前模式允许的扇形与三圈站位内，未找到人数差不超过{tolerance}的方案。", explored)
     for _score, path in sorted(candidates, key=lambda item: item[0]):
         eligible = [(index, player.player_key)
                     for index, (player, option) in enumerate(zip(players, path)) if option.hits == 1]
@@ -374,7 +380,7 @@ def solve(players: Sequence[PlayerState], mode: Mode = "all", *,
         plan = SolverPlan(mode, snapshot_stage, actions, centers,
                           reference_without_tank=tank_key is None and not current_snapshot,
                           current_snapshot=current_snapshot,command_style=preferred_actions is not None)  # type: ignore[arg-type]
-        simulation = simulate_plan(players, plan)
+        simulation = simulate_plan(players, plan, tolerance=tolerance)
         if simulation.valid:
             return SearchResult(plan, simulation, explored=explored)
     return SearchResult(None, None, "候选方案未通过完整技能顺序校验。", explored)

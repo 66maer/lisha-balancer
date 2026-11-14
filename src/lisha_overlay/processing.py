@@ -55,7 +55,8 @@ class AnalysisWorker(QObject):
     @Slot(QImage, dict, dict)
     def process(self, image, capture_metadata, config):
         started = time.perf_counter()
-        metadata = {**capture_metadata, "generation": config["generation"]}
+        metadata = {**capture_metadata, "generation": config["generation"],
+                    'difficulty': config.get('difficulty', 'normal')}
         try:
             if QThread.currentThread().isInterruptionRequested():
                 return
@@ -79,7 +80,8 @@ class AnalysisWorker(QObject):
                                           if key in {"color", "stacks", "alive", "isolated"}})
                        for player in players]
             evaluator = evaluate_exact if config.get('prefer_exact') else evaluate
-            result = self._plan_cache.evaluate(players, config["mode"], snapshot_stage=config.get("snapshot_stage", "before_tank"), evaluator=evaluator)
+            result = self._plan_cache.evaluate(players, config["mode"], snapshot_stage=config.get("snapshot_stage", "before_tank"),
+                                               evaluator=evaluator, difficulty=config.get('difficulty', 'normal'))
             metadata["planning_cache_hit"] = self._plan_cache.last_hit
             confirmed = {p.player_key for p in players} if config.get("isolation_confirmed") else {
                 key for key, value in overrides.items() if "isolated" in value}

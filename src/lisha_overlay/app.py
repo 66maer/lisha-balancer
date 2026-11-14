@@ -234,6 +234,7 @@ class OverlayController(QObject):
         self._published_frame = QImage()
         self.debug_captures = '--debug-captures' in sys.argv and '--no-debug-captures' not in sys.argv
         self.prefer_exact = self.settings.get('prefer_exact', False) is True
+        self.difficulty = 'heroic' if self.settings.get('difficulty') == 'heroic' else 'normal'
         self._metadata: dict = {}
         self._dialog = None
 
@@ -253,6 +254,7 @@ class OverlayController(QObject):
         self.panel.set_attached(self.attached)
         self.panel.set_locked(False)
         self.panel.set_mode(self.analysis_mode)
+        self.panel.set_difficulty(self.difficulty)
         self.panel.set_pinned(self.pinned)
         self.scan.set_team_layout(self.team_layout)
         self.scan.set_analysis_mode(self.analysis_mode)
@@ -289,6 +291,7 @@ class OverlayController(QObject):
         self.panel.tank_requested.connect(self.select_tank)
         self.panel.close_requested.connect(self.quit)
         self.panel.mode_changed.connect(self.select_analysis_mode)
+        self.panel.difficulty_changed.connect(self.set_difficulty)
         self.panel.analysis_toggled.connect(self.toggle_analysis)
         self.panel.test_toggled.connect(self.set_test_enabled)
         self.panel.pin_toggled.connect(self.set_pinned)
@@ -1103,6 +1106,7 @@ class OverlayController(QObject):
                   "isolation_confirmed": self.isolation_confirmed,
                   "mode": self.analysis_mode,
                   'prefer_exact': getattr(self, 'prefer_exact', False),
+                  'difficulty': getattr(self, 'difficulty', 'normal'),
                   "overrides": {key: dict(value) for key, value in self.manual_overrides.items()}}
         self.analysis_requested.emit(image, dict(metadata), config)
 
@@ -1238,6 +1242,7 @@ class OverlayController(QObject):
             "version": __version__,
             "remote_compatible": getattr(self, "remote_compatible", False),
             "captured_at": metadata.get("captured_at"), "mode": self.analysis_mode,
+            'difficulty': getattr(self, 'difficulty', 'normal'),
             "status": result.status, "summary": result.summary, "region": dict(self._region),
             "current_red": result.current_red, "current_black": result.current_black,
             "current_difference": (result.current_red-result.current_black
@@ -1378,7 +1383,8 @@ class OverlayController(QObject):
         """Recognition may publish validated grid identities through this boundary."""
         self._players = list(players)
         if not self.test_enabled:
-            self.apply_analysis(evaluate(self._players, self.analysis_mode, snapshot_stage=self.snapshot_stage))
+            self.apply_analysis(evaluate(self._players, self.analysis_mode, snapshot_stage=self.snapshot_stage,
+                                         difficulty=getattr(self, 'difficulty', 'normal')))
 
     def _refresh_summary(self):
         self.panel.set_grid_ready(getattr(self,'grid_ready',False))
@@ -1634,7 +1640,19 @@ class OverlayController(QObject):
         elif self._players:
             from .live_strategy import evaluate_exact
             evaluator = evaluate_exact if self.prefer_exact else evaluate
-            self.apply_analysis(evaluator(self._players, self.analysis_mode))
+            self.apply_analysis(evaluator(self._players, self.analysis_mode,
+                                          difficulty=getattr(self, 'difficulty', 'normal')))
+
+    def set_difficulty(self, difficulty):
+        self.difficulty = 'heroic' if difficulty == 'heroic' else 'normal'
+        self.panel.set_difficulty(self.difficulty)
+        self.persist()
+        if self._continuous_analysis:
+            self.analyze_mode(self.analysis_mode)
+        elif self._players and not self.test_enabled:
+            from .live_strategy import evaluate_exact
+            evaluator = evaluate_exact if self.prefer_exact else evaluate
+            self.apply_analysis(evaluator(self._players, self.analysis_mode, difficulty=self.difficulty))
 
     def export_debug_bundle(self):
         folder = settings_path().parent
@@ -1681,6 +1699,7 @@ class OverlayController(QObject):
             "snapshot_stage": self.snapshot_stage,
             "remote_compatible": getattr(self, "remote_compatible", False),
             'prefer_exact': getattr(self, 'prefer_exact', False),
+            'difficulty': getattr(self, 'difficulty', 'normal'),
         })
         try:
             save_settings(self.settings)

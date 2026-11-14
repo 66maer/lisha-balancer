@@ -10,6 +10,7 @@ from collections import Counter
 from typing import Iterable, Literal
 
 from .team_layout import Annotation
+from .difficulty import SAFE_TOLERANCE
 from .solver import PlayerAction, SolverPlan, Stage, simulate_plan, solve
 
 AnalysisMode = Literal["all", "fan", "circle"]
@@ -44,6 +45,7 @@ class AnalysisResult:
     balanced: bool = False
     reference: bool = False
     strategy: dict = field(default_factory=dict)
+    buff_counts: dict[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -59,7 +61,7 @@ def _mode(mode: str) -> AnalysisMode:
 
 def evaluate(players: Iterable[PlayerState], mode: AnalysisMode = "all", *,
              snapshot_stage: Stage = "before_tank", current_snapshot: bool = False,
-             current_strategy=None) -> AnalysisResult:
+             current_strategy=None, tolerance: int = 2, avoid_overlap: bool = False) -> AnalysisResult:
     """Validate a complete snapshot, search the selected mode, and replay it.
 
     The default snapshot is immediately after 天坠 and before T's mandatory +3
@@ -119,27 +121,38 @@ def evaluate(players: Iterable[PlayerState], mode: AnalysisMode = "all", *,
     black_one = sum(player.alive and player.color == "black" and player.stacks == 1 for player in snapshot)
     red_count = sum(p.alive and p.color == 'red' for p in snapshot)
     black_count = sum(p.alive and p.color == 'black' for p in snapshot)
+    buff_counts = dict(Counter(
+        f'{p.color}{p.stacks}' for p in snapshot if p.alive and p.color in ('red', 'black')
+    ))
     difference = red_count-black_count
     counts = f"红 {red_count}  黑 {black_count}  差 {difference:+d}" if difference else f"红 {red_count}  黑 {black_count}  差 0"
     if current_snapshot and current_strategy is not None:
         result = current_strategy(snapshot, mode, counts, red_count, black_count)
         if result is not None:
+            result.buff_counts = buff_counts
             return result
-    if (current_snapshot and abs(difference)<=2 and
+    if (current_snapshot and abs(difference)<=tolerance and
             not any(p.alive and p.color in ('red','black') and p.stacks==5 for p in snapshot)):
-        return balanced_result(snapshot, mode, counts, red_count, black_count)
+        result = balanced_result(snapshot, mode, counts, red_count, black_count)
+        result.buff_counts = buff_counts
+        return result
     if current_snapshot:
-        from .command_solver import solve_commands
-        found=solve_commands(snapshot,mode)
+        if avoid_overlap or tolerance != 2:
+            found = solve(snapshot, mode, current_snapshot=True, tolerance=tolerance, avoid_overlap=avoid_overlap)
+        else:
+            from .command_solver import solve_commands
+            found=solve_commands(snapshot,mode)
     else:
         found = solve(snapshot, mode, snapshot_stage=snapshot_stage,
-                      allow_missing_tank=reference_without_tank, current_snapshot=current_snapshot)
+                      allow_missing_tank=reference_without_tank, current_snapshot=current_snapshot,
+                      tolerance=tolerance, avoid_overlap=avoid_overlap)
     if found.plan is None or found.simulation is None:
         return AnalysisResult(
             counts if current_snapshot else reference_prefix + "当前站位无解", status="no_solution",
             details=reference_details + found.reason + "\n搜索范围：三名不同中心各吃一次；贴圈者连续吃至多三圈；"
             "未搜索中心兼吃其他圈或复杂移动，不把当前搜索失败当成全机制绝对无解。",
             current_red=red_count, current_black=black_count, instruction="无解，等死吧",
+            buff_counts=buff_counts,
         )
     plan, simulation = found.plan, found.simulation
     centers = set(plan.centers)
@@ -181,13 +194,15 @@ def evaluate(players: Iterable[PlayerState], mode: AnalysisMode = "all", *,
         plan, simulation.red_count, simulation.black_count, simulation.difference,
         current_red=red_count, current_black=black_count, instruction=instruction,
         reference=complex_fallback,
+        buff_counts=buff_counts,
     )
 
 
 def evaluate_current(players: Iterable[PlayerState], mode: AnalysisMode = 'all', *,
-                     snapshot_stage: Stage = 'after_tank') -> AnalysisResult:
+                     snapshot_stage: Stage = 'after_tank', difficulty: str = 'normal') -> AnalysisResult:
     """Live overlay policy: count the observed roster; no T selection/event."""
-    return evaluate(players, mode, snapshot_stage='after_tank', current_snapshot=True)
+    return evaluate(players, mode, snapshot_stage='after_tank', current_snapshot=True,
+                    tolerance=SAFE_TOLERANCE[difficulty])
 
 
 def balanced_result(players, mode, counts, red, black):
@@ -261,6 +276,7 @@ def demo_result(mode: AnalysisMode = "all") -> AnalysisResult:
         status="demo",
         details="测试区域与模拟标记；圈内 1、2、3 表示圈序，不是 Buff 层数或当前实战方案。",
         current_red=6, current_black=8,
-        instruction='测试 · '+('2黑一吃扇形；3红一排圈' if mode=='all' else
-                              '2黑一吃扇形' if mode=='fan' else '3红一排圈'),
+        buff_counts={'red1': 6, 'black1': 8},
+        instruction=('测试 · {黑1} × 2 吃扇' if mode != 'circle' else '无需吃扇')
+                    + '\n测试 · {红1} × 3 引导圈\n无需蹭圈',
     )

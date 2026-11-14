@@ -78,7 +78,9 @@ def test_dead_player_does_not_count_and_isolation_does_not_erase_a_buff():
     players = roster()
     players[1] = replace(players[1], isolated=True)
     players[2] = replace(players[2], alive=False, color="unknown", stacks=None)
-    assert evaluate(players).summary == "红1 1 · 黑1 0"
+    result = evaluate(players)
+    assert result.summary == "红1 1 · 黑1 0"
+    assert result.buff_counts == {'red1': 1, 'red2': 1}
 
 
 @pytest.mark.parametrize("function", [evaluate, demo_result])

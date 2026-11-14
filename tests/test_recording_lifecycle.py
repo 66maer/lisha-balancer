@@ -90,3 +90,26 @@ def test_instruction_is_bold_and_impossible_message_is_exact(controller,qt_app):
     controller.panel.set_result(result);qt_app.processEvents()
     assert controller.panel._instruction_label.text()=='无解，等死吧'
     assert controller.panel._instruction_label.font().bold()
+
+
+def test_difficulty_button_replans_persists_and_invalidates_inflight_results(controller):
+    from lisha_overlay.live_strategy import evaluate_current as live_evaluate
+    c = controller
+    players = [PlayerState(f'g{i//5+1}p{i%5+1}', 'red' if i < 14 else 'black' if i < 24 else 'none',
+                           1 if i < 24 else 0) for i in range(25)]
+    c._players = players
+    c.apply_analysis(live_evaluate(players))
+    size = c.panel.size()
+    c.panel.difficulty_button.click()
+    assert c.difficulty == c.settings['difficulty'] == 'heroic'
+    assert c._last_result.difference <= 1
+    assert c.panel.size() == size
+    c.grid_ready = True
+    c.running = True
+    c.analyze_mode('all')
+    generation = c._generation
+    c.panel.difficulty_button.click()
+    assert c.difficulty == c.settings['difficulty'] == 'normal'
+    assert c._generation == generation + 1 and c._last_result is None
+    assert c._confirmed_team_result is None
+    assert c.panel.size() == size
