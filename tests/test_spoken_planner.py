@@ -2,6 +2,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from PySide6.QtGui import QImage
 
 from lisha_overlay.analysis import PlayerState
@@ -35,6 +36,22 @@ def test_team_school_phrase_covers_exactly_the_two_assigned_tangmen():
     text, groups, _ = CallPlanner(players).compile(plan)
     assert text.splitlines()[0] == '1队和2队唐门吃扇'
     assert groups[0]['keys'] == ['g1p1', 'g2p1']
+
+
+@pytest.mark.parametrize(('dps', 'healer', 'expected'), [
+    ('binxin', 'yunchang', '冰心、奶秀'),
+    ('mowen', 'xiangzhi', '莫问、奶歌'),
+    ('huajian', 'lijing', '花间、奶花'),
+    ('wufang', 'lingsu', '无方、奶药'),
+    ('dujing', 'butian', '毒经、奶毒'),
+])
+def test_same_school_dps_and_healer_are_called_separately_even_with_the_same_buff(dps, healer, expected):
+    players = roster([1, 1] + [0] * 23, {0: dps, 1: healer})
+    plan = SolverPlan('all', 'after_tank', (PlayerAction('g1p1', True), PlayerAction('g1p2', True)),
+                      ('g4p1', 'g4p2', 'g4p3'), current_snapshot=True)
+    text, groups, _ = CallPlanner(players).compile(plan)
+    assert text.splitlines()[0] == expected + '吃扇'
+    assert [group['keys'] for group in groups if group['action'] == 'fan'] == [['g1p1'], ['g1p2']]
 
 
 def test_unknown_heart_prevents_calling_an_entire_unconfirmed_heart_group():

@@ -455,7 +455,6 @@ class ControlPanel(QWidget):
         policy_layout.setSpacing(4)
         self.timeline_button = _ModeSwitch('timelineButton', '手动', '自动')
         self.timeline_button.toggled.connect(self.timeline_toggled)
-        self.set_auto_timeline(True)
         policy_layout.addWidget(self.timeline_button, 1)
         self.strategy_button = _ModeSwitch('strategyButton', '正平', '简操')
         self.strategy_button.toggled.connect(lambda simple: self.strategy_toggled.emit(not simple))
@@ -547,18 +546,25 @@ class ControlPanel(QWidget):
         self._summary_label.setMinimumWidth(0)
         self._summary_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         summary_row.addWidget(self._summary_label, 1)
-        self._reference_label = QLabel('参考')
-        self._reference_label.setObjectName('referenceLabel')
-        self._reference_label.setStyleSheet('color: #8a5700; font-size: 11px; font-weight: 700;')
-        self._reference_label.hide()
-        summary_row.addWidget(self._reference_label, 0, Qt.AlignmentFlag.AlignRight)
+        self._timeline_label = QLabel()
+        self._timeline_label.setObjectName('timelineLabel')
+        self._timeline_label.setTextFormat(Qt.TextFormat.PlainText)
+        summary_row.addWidget(self._timeline_label, 0, Qt.AlignmentFlag.AlignRight)
+        self.set_auto_timeline(True)
         status_rows.addLayout(summary_row)
         self._buff_counts_row = QWidget()
         self._buff_counts_row.setObjectName('buffCountsRow')
         self._buff_counts_row.setFixedHeight(18)
         buffs_layout = QHBoxLayout(self._buff_counts_row)
         buffs_layout.setContentsMargins(0, 0, 0, 0)
-        buffs_layout.setSpacing(6)
+        buffs_layout.setSpacing(3)
+        self._reference_label = QLabel('参考')
+        self._reference_label.setObjectName('referenceLabel')
+        reference_policy = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        reference_policy.setRetainSizeWhenHidden(True)
+        self._reference_label.setSizePolicy(reference_policy)
+        self._reference_label.hide()
+        buffs_layout.addWidget(self._reference_label)
         self._buff_count_labels = {}
         for color in ('red', 'black'):
             for stacks in range(1, 4):
@@ -759,6 +765,8 @@ class ControlPanel(QWidget):
         self.timeline_button.setAccessibleName('当前自动阶段' if enabled else '当前手动阶段')
         tip = '点击切到手动阶段。也可直接点扇+圈或仅圈接管。' if enabled else '点击开启自动阶段'
         self.timeline_button.setToolTip(f'{phase}\n{tip}' if enabled and phase else tip)
+        self._timeline_label.setText(phase if enabled else '')
+        self._timeline_label.setVisible(enabled and bool(phase))
 
     def set_exact_preference(self, enabled: bool) -> None:
         self._check_silently(self.strategy_button, not enabled)
@@ -849,8 +857,12 @@ class ControlPanel(QWidget):
             color = "#f29a9e" if self._summary_error else (_YELLOW if self._test_mode else "#a8bccb")
             self._summary_label.setStyleSheet(f"color: {color}; font-size: 11px;")
             available = max(1, self._summary_label.width())
+            text = '' if self._summary_text == self._timeline_label.text() else self._summary_text
             self._summary_label.setText(self._summary_label.fontMetrics().elidedText(
-                self._summary_text, Qt.TextElideMode.ElideRight, available))
+                text, Qt.TextElideMode.ElideRight, available))
+        self._timeline_label.setStyleSheet(
+            f"color: {'#334957' if self._summary_statistics is not None else '#a8bccb'}; font-size: 11px; font-weight: 700;"
+        )
         self._reference_label.setVisible(self._summary_reference)
         self._reference_label.setStyleSheet(
             f"color: {'#8a5700' if self._summary_statistics is not None else _YELLOW}; font-size: 11px; font-weight: 700;"

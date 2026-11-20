@@ -230,7 +230,7 @@ class MarksOverlay(QWidget):
             annotations = by_player.get(cell.key, [])
             if cell.key == self.tank_key:
                 size = min(15, cell.rect.height() * 0.57, cell.rect.width() * 0.25)
-                box = QRectF(cell.rect.left() + 2, cell.rect.top() + 2, size, size)
+                box = QRectF(cell.rect.right() - size - 2, cell.rect.top() + 2, size, size)
                 painter.setBrush(QColor('#2c2415'))
                 painter.setPen(QPen(QColor('#ffda7a'), 1))
                 painter.drawRoundedRect(box, 3, 3)

@@ -17,16 +17,16 @@ class Phase:
 WAITING = Phase('waiting', '等待团框出现首个Buff')
 SYNCING = Phase('syncing', '等待团框清空后起表')
 BEFORE_TANK = Phase('before_tank', '一式前', 'all', 'before_tank')
-TANK_CAST = Phase('tank_cast', '一式结算中')
+TANK_CAST = Phase('tank_cast', '结算一式打T')
 AFTER_TANK = Phase('after_tank', '一式后 · 等扇形', 'all')
-FAN_CAST = Phase('fan_cast', '扇形结算中')
+FAN_CAST = Phase('fan_cast', '结算二式扇形')
 AFTER_FAN = Phase('after_fan', '扇形后 · 仅圈', 'circle')
 CIRCLES = (
-    Phase('circle_1', '一圈结算中'),
-    Phase('circle_2', '二圈结算中'),
-    Phase('circle_3', '三圈结算中'),
+    Phase('circle_1', '结算一圈'),
+    Phase('circle_2', '结算二圈'),
+    Phase('circle_3', '结算三圈'),
 )
-SETTLING = Phase('settling', '等待结算清空')
+SETTLING = Phase('settling', '结算统计')
 
 ONE_CAST = 41.8
 ONE_HIT = 43.8

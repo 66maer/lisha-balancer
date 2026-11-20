@@ -107,6 +107,63 @@ def test_published_circle_plan_matches_numbered_team_marks_and_clears_on_stop(co
     assert all(not label.text() for label in controller.panel._buff_plan_labels)
 
 
+def test_auto_settlement_updates_actual_buffs_and_keeps_plan_until_clear(controller):
+    from dataclasses import replace
+    from lisha_overlay.analysis import AnalysisResult
+    from lisha_overlay.solver import PlayerAction, SolverPlan
+    from lisha_overlay.team_layout import Annotation
+
+    c = controller
+    c._continuous_analysis = True
+    metadata = {
+        'generation': c._generation, 'effective_mode': 'all', 'timeline_phase': 'before_tank',
+        'timeline_label': '一式前', 'timeline_started_at': 1., 'captured_at': 2.,
+        'vision_backend': 'learned',
+    }
+    players = [PlayerState(f'g{i//5+1}p{i%5+1}', 'none', 0) for i in range(25)]
+    metadata['diagnostics'] = {p.player_key: {'localized': True} for p in players}
+    plan = AnalysisResult(
+        '末次配平方案', status='solved', final_red=11, final_black=11, instruction='1队1号吃扇',
+        plan=SolverPlan('all', 'before_tank', (PlayerAction('g1p1', True),), ('g2p1', 'g2p2', 'g2p3')),
+        annotations=[Annotation('g1p1', 'fan')],
+    )
+    c._analysis_completed(plan, players, metadata)
+    predicted = c.panel._result_label.text()
+    assert '红 11' in predicted and '黑 11' in predicted
+
+    for phase, mode in (('tank_cast', None), ('fan_cast', None), ('after_fan', 'circle'), ('circle_1', None)):
+        c._analysis_completed(replace(plan), players,
+                              {**metadata, 'effective_mode': mode, 'timeline_phase': phase,
+                               'timeline_plan_held': True})
+        assert c.panel._result_label.text() == predicted
+        assert c.panel._instruction_label.text() == '1队1号吃扇'
+        assert c.scan.markers.displayed_annotations() == plan.annotations
+
+    uncertain = [replace(players[0], color='unknown'), *players[1:]]
+    held = {**metadata, 'effective_mode': None, 'timeline_phase': 'circle_2', 'timeline_plan_held': True}
+    c._analysis_completed(replace(plan), uncertain, held)
+    assert held['published_kind'] == 'reference'
+    assert c.panel._instruction_label.text() == '1队1号吃扇'
+    assert c.scan.markers.displayed_annotations() == plan.annotations
+
+    actual = replace(plan, summary='红 9 黑 11 差 -2', current_red=9, current_black=11,
+                     buff_counts={'red1': 9, 'black1': 4, 'black2': 5, 'black4': 2})
+    c._analysis_completed(actual, players, {**held, 'timeline_phase': 'settling'})
+    assert '红 9' in c.panel._summary_label.text() and '黑 11' in c.panel._summary_label.text()
+    assert '差 -2' in c.panel._summary_label.text()
+    assert c.panel._buff_count_labels['black3'].text() == '2'
+    assert c.panel._result_label.text() == predicted
+    assert c.panel._instruction_label.text() == '1队1号吃扇'
+    assert c.scan.markers.displayed_annotations() == plan.annotations
+
+    c._analysis_completed(AnalysisResult('等待下一轮', status='timeline_wait'), players,
+                          {**metadata, 'effective_mode': None, 'timeline_phase': 'waiting',
+                           'timeline_started_at': None})
+    assert '红 11' not in c.panel._result_label.text()
+    assert c.panel._instruction_label.text() == ''
+    assert not c.scan.markers.displayed_annotations()
+
+
 def test_difficulty_button_replans_persists_and_invalidates_inflight_results(controller):
     from lisha_overlay.live_strategy import evaluate_current as live_evaluate
     c = controller

@@ -293,20 +293,33 @@ def test_safe_check_clears_when_a_new_correction_is_needed(qt_app):
     finally:panel.deleteLater()
 
 
-def test_reference_hint_is_visible_with_rich_counts_and_clears_with_status(qt_app):
+def test_timeline_and_reference_hint_fit_on_separate_status_rows(qt_app):
     from lisha_overlay.analysis import AnalysisResult
     panel=ControlPanel()
     try:
+        panel.set_auto_timeline(True, '结算二式扇形')
         panel.set_result(AnalysisResult('候选结果',status='solved',current_red=12,current_black=10,
             balanced=True,instruction='黑一/黑二引导黑圈',reference=True))
         panel.show()
         qt_app.processEvents()
+        timeline, reference = panel._timeline_label, panel._reference_label
+        red_one = panel._buff_count_labels['red1']
         assert panel._reference_label.isVisible() and '✓' in panel._summary_label.text()
-        assert panel._summary_label.geometry().right() < panel._reference_label.geometry().left()
+        assert timeline.isVisible() and timeline.text() == '结算二式扇形'
+        assert timeline.fontMetrics().horizontalAdvance(timeline.text()) <= timeline.width()
+        assert panel._summary_label.geometry().right() < timeline.geometry().left()
+        assert timeline.mapTo(panel, QPoint()).y() < reference.mapTo(panel, QPoint()).y()
+        assert reference.parentWidget() is panel._buff_counts_row
+        assert reference.geometry().right() < red_one.geometry().left()
+        red_one_x = red_one.x()
         assert '参考' in panel._summary_label.toolTip()
         assert panel.size() == QSize(360, 206)
         panel.set_summary('格子待定位')
-        assert panel._reference_label.isHidden()
+        qt_app.processEvents()
+        assert reference.isHidden() and red_one.x() == red_one_x
+        assert timeline.isVisible()
+        panel.set_auto_timeline(False)
+        assert timeline.isHidden()
     finally:panel.deleteLater()
 
 

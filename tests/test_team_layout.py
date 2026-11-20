@@ -194,3 +194,17 @@ def test_annotations_render_only_requested_cells_and_modes(qt_app):
         assert not any(bytes(_render(marks).constBits()))
     finally:
         marks.close()
+
+
+def test_tank_badge_is_in_the_selected_cells_top_right_corner(qt_app):
+    marks = MarksOverlay()
+    try:
+        marks.resize(455, 590)
+        marks.set_tank_key('g1p2')
+        cell = next(cell for cell in marks.team_layout.cells(marks.content_rect()) if cell.key == 'g1p2')
+        image = _render(marks)
+        y = round(cell.rect.top() + 8)
+        assert image.pixelColor(round(cell.rect.right() - 8), y).alpha() > 0
+        assert image.pixelColor(round(cell.rect.left() + 8), y).alpha() == 0
+    finally:
+        marks.close()

@@ -1215,20 +1215,23 @@ class OverlayController(QObject):
         self._players = list(players)
         self._analysis_metadata = metadata
         self._analysis_attempts += 1
+        plan_held = metadata.get('timeline_plan_held', False)
         if 'timeline_phase' in metadata:
             mode = metadata['effective_mode']
             self.panel.set_auto_timeline(True, metadata['timeline_label'])
             self.panel.set_mode(mode)
-            self.scan.set_analysis_mode(mode or self.analysis_mode)
-        if result.status == 'timeline_wait':
+            mark_mode = result.plan.mode if plan_held else mode
+            self.scan.set_analysis_mode(mark_mode or self.analysis_mode)
+        if result.status == 'timeline_wait' or (plan_held and metadata.get('vision_backend') != 'learned'):
             self._analysis_pending = False
             self._team_confirmation.reset()
             self._confirmed_team_result = None
             self._recognition_previous = None
             self._stable_frames = 0
+            phase = metadata.get('timeline_phase')
             self.apply_analysis(result)
             self.panel.set_status(result.details)
-            diagnosis = ('timeline_wait', metadata.get('timeline_phase'))
+            diagnosis = (result.status, phase, result.buff_counts, result.reference)
             if diagnosis != self._last_diagnostic_signature:
                 self._record_analysis(result, players, metadata)
                 self._last_diagnostic_signature = diagnosis
@@ -1322,7 +1325,8 @@ class OverlayController(QObject):
             self._confirmed_team_result = deepcopy(result), list(players)
             self.isolation_confirmed = False
             self.manual_overrides.clear()
-        if trustworthy:
+        show_plan = trustworthy or metadata.get('timeline_plan_held', False)
+        if show_plan:
             published = deepcopy(result)
             published.reference = result.reference or status != 'confirmed'
             self._players = list(players)
@@ -1338,9 +1342,9 @@ class OverlayController(QObject):
             self.panel.set_status(result.details)
             geometry_missing=any(not diagnostics.get(p.player_key,{}).get('localized',False) for p in players)
             self.panel.set_summary('格子待定位' if geometry_missing else result.summary or '画面待确认')
-        metadata['published'] = trustworthy
-        metadata['reference'] = published.reference if trustworthy else False
-        metadata['published_kind'] = ('reference' if published.reference else 'confirmed') if trustworthy else 'invalid'
+        metadata['published'] = show_plan
+        metadata['reference'] = published.reference if show_plan else False
+        metadata['published_kind'] = ('reference' if published.reference else 'confirmed') if show_plan else 'invalid'
         metadata['confirmation_hold_ms'] = 0.
         diagnosis = (signature, result.status, status, metadata['reference'], metadata.get('timeline_phase'),
                      tuple(metadata.get('reference_keys',[])))

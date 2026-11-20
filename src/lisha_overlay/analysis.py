@@ -56,6 +56,14 @@ class PlanAnnotation(Annotation):
     role: Literal["center", "helper"] = "helper"
 
 
+def count_buffs(players: Iterable[PlayerState]) -> tuple[int, int, dict[str, int]]:
+    """Count living Buff holders and break them down by color and layer."""
+    counts = Counter(f'{p.color}{p.stacks}' for p in players if p.alive and p.color in ('red', 'black'))
+    red = sum(count for key, count in counts.items() if key.startswith('red'))
+    black = sum(count for key, count in counts.items() if key.startswith('black'))
+    return red, black, dict(counts)
+
+
 def _mode(mode: str) -> AnalysisMode:
     if mode not in MODES:
         raise ValueError(f"Unknown analysis mode: {mode!r}")
@@ -121,13 +129,8 @@ def evaluate(players: Iterable[PlayerState], mode: AnalysisMode = "all", *,
             + "承伤 T 不可按扇标执行，指定存活 T 后可重算。\n"
         )
 
-    red_one = sum(player.alive and player.color == "red" and player.stacks == 1 for player in snapshot)
-    black_one = sum(player.alive and player.color == "black" and player.stacks == 1 for player in snapshot)
-    red_count = sum(p.alive and p.color == 'red' for p in snapshot)
-    black_count = sum(p.alive and p.color == 'black' for p in snapshot)
-    buff_counts = dict(Counter(
-        f'{p.color}{p.stacks}' for p in snapshot if p.alive and p.color in ('red', 'black')
-    ))
+    red_count, black_count, buff_counts = count_buffs(snapshot)
+    red_one, black_one = buff_counts.get('red1', 0), buff_counts.get('black1', 0)
     difference = red_count-black_count
     counts = f"红 {red_count}  黑 {black_count}  差 {difference:+d}" if difference else f"红 {red_count}  黑 {black_count}  差 0"
     if current_snapshot and current_strategy is not None:

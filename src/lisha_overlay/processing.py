@@ -1,4 +1,5 @@
 """CPU recognition and planning run off the GUI thread, one snapshot at a time."""
+from copy import deepcopy
 from dataclasses import replace
 import json
 import time
@@ -10,8 +11,10 @@ from PySide6.QtGui import QImage
 from .live_strategy import evaluate_simple_commands as evaluate, evaluate_exact_commands as evaluate_exact
 from .team_layout import TeamLayout
 from .cached_analysis import AnalysisCache
-from .analysis import ACTIONABLE_STATUSES, AnalysisResult
+from .analysis import ACTIONABLE_STATUSES, AnalysisResult, count_buffs
+from .difficulty import SAFE_TOLERANCE
 from .encounter_timeline import EncounterTimeline, TimelineSample
+from .solver import BuffState, simulate_plan
 
 
 def _player_labels(keys):
@@ -45,6 +48,36 @@ def _timeline_sample(players, diagnostics) -> TimelineSample | None:
     return None
 
 
+def _observed_buffs(players, diagnostics):
+    if len(players) != 25 or len({p.player_key for p in players}) != 25:
+        return None
+    states = {}
+    for player in players:
+        flags = diagnostics.get(player.player_key, {})
+        if not flags.get('localized') or flags.get('unverified_scene'):
+            return None
+        if not player.alive:
+            states[player.player_key] = BuffState(0, False, False)
+            continue
+        layers = player.stacks
+        if player.color == 'none':
+            valid_layers = layers is None or (type(layers) is int and layers == 0)
+        else:
+            valid_layers = player.color in ('red', 'black') and type(layers) is int and 1 <= layers <= 5
+        if flags.get('unverified_occlusion') or not valid_layers:
+            return None
+        value = (layers or 0) * (-1 if player.color == 'black' else 1)
+        states[player.player_key] = BuffState(value, player.isolated)
+    return states
+
+
+def _update_observed_counts(result, players):
+    red, black, counts = count_buffs(players)
+    delta = red - black
+    result.current_red, result.current_black, result.buff_counts = red, black, counts
+    result.summary = f'红 {red}  黑 {black}  差 {delta:+d}' if delta else f'红 {red}  黑 {black}  差 0'
+
+
 class AnalysisWorker(QObject):
     # Preserve Python dataclasses across the queued connection without
     # converting them through QVariantList/Map containers.
@@ -59,6 +92,10 @@ class AnalysisWorker(QObject):
         self._backend = backend
         self._timeline = EncounterTimeline()
         self._timeline_session = None
+        self._round_context = None
+        self._round_result = None
+        self._round_states = {}
+        self._round_mismatch = None
         self._xinfa_reader = None
         self._xinfa_scan = None
         self._xinfa_request = None
@@ -92,6 +129,58 @@ class AnalysisWorker(QObject):
         self._engine = self._new_engine(TeamLayout.from_dict(layout), tank_key)
         self._signature = json.dumps([layout, tank_key], sort_keys=True)
         self._plan_cache.reset()
+
+    def _auto_result(self, phase, players, diagnostics, config, metadata):
+        """Keep one verified set of assignments until a stable checkpoint disagrees."""
+        context = self._timeline_session, self._timeline.started_at, config['generation']
+        if context != self._round_context:
+            self._round_context = context
+            self._round_result = None
+            self._round_states = {}
+            self._round_mismatch = None
+        observed = _observed_buffs(players, diagnostics)
+        if self._round_result is not None:
+            expected = self._round_states.get(phase.key)
+            changed = ()
+            if expected is not None and observed is not None and expected.keys() == observed.keys():
+                changed = tuple((key, value) for key, value in sorted(observed.items())
+                                if value != expected[key] and isinstance(value.isolated, bool)
+                                and not diagnostics[key].get('estimate_reasons'))
+            instant = metadata.get('captured_at')
+            key = phase.key, changed
+            failed = bool(changed and self._round_mismatch is not None
+                          and self._round_mismatch[0] == key and self._round_mismatch[1] != instant)
+            self._round_mismatch = (key, instant) if changed else None
+            if not failed:
+                if observed is not None:
+                    _update_observed_counts(self._round_result, players)
+                held = deepcopy(self._round_result)
+                held.reference |= observed is None or bool(changed)
+                metadata['timeline_plan_held'] = True
+                return held
+            self._round_result = None
+            self._round_mismatch = None
+        if phase.mode is None:
+            result = AnalysisResult(phase.label, status='timeline_wait',
+                                    details='按画面统计当前煞气，清空后自动开始下一轮。')
+            if self._timeline.started_at is not None and observed is not None:
+                _update_observed_counts(result, players)
+            return result
+        result = self._evaluate(players, phase.mode, phase.stage, config, metadata)
+        if result.plan is not None and observed is not None:
+            trace = simulate_plan(players, result.plan, tolerance=SAFE_TOLERANCE[metadata['difficulty']],
+                                  trace_stages=True)
+            if trace.valid:
+                self._round_result = deepcopy(result)
+                self._round_states = trace.stage_states
+        return result
+
+    def _evaluate(self, players, mode, stage, config, metadata):
+        evaluator = evaluate_exact if config.get('prefer_exact') else evaluate
+        result = self._plan_cache.evaluate(players, mode, snapshot_stage=stage, evaluator=evaluator,
+                                           difficulty=metadata['difficulty'])
+        metadata['planning_cache_hit'] = self._plan_cache.last_hit
+        return result
 
     @Slot(QImage, dict, dict)
     def process(self, image, capture_metadata, config):
@@ -147,15 +236,9 @@ class AnalysisWorker(QObject):
                 metadata.update(timeline_phase=phase.key, timeline_label=phase.label,
                                 timeline_started_at=self._timeline.started_at)
             metadata.update(effective_mode=mode, snapshot_stage=stage)
-            if mode is None:
-                result = AnalysisResult(phase.label, status='timeline_wait',
-                                        details='按团框变化估时，可随时点选手动模式。')
-                metadata['planning_cache_hit'] = False
-            else:
-                evaluator = evaluate_exact if config.get('prefer_exact') else evaluate
-                result = self._plan_cache.evaluate(players, mode, snapshot_stage=stage, evaluator=evaluator,
-                                                   difficulty=config.get('difficulty', 'normal'))
-                metadata['planning_cache_hit'] = self._plan_cache.last_hit
+            metadata['planning_cache_hit'] = False
+            result = (self._auto_result(phase, players, diagnostics, config, metadata) if auto
+                      else self._evaluate(players, mode, stage, config, metadata))
             confirmed = {p.player_key for p in players} if config.get("isolation_confirmed") else {
                 key for key, value in overrides.items() if "isolated" in value}
             confirmed.update(key for key, item in diagnostics.items() if item.get("isolation_confirmed") is True)
@@ -168,7 +251,9 @@ class AnalysisWorker(QObject):
                 reasons = list(detail.get('estimate_reasons', []))
                 if reasons:
                     reference_reasons[player.player_key] = reasons
-            if reference_reasons and result.status in ACTIONABLE_STATUSES:
+            if reference_reasons and (
+                result.status in ACTIONABLE_STATUSES or (result.status == 'timeline_wait' and result.buff_counts is not None)
+            ):
                 result.reference = True
                 note = '按模型候选计算：' + _player_labels(reference_reasons)
                 result.warnings.append(note)

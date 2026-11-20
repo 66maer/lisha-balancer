@@ -92,6 +92,7 @@ class SimulationResult:
     black_count: int = 0
     weak_cancellations: int = 0
     strong_cancellations: int = 0
+    stage_states: dict[str, dict[str, BuffState]] = field(default_factory=dict)
 
     @property
     def difference(self) -> int:
@@ -119,7 +120,7 @@ def _states(players: Sequence[PlayerState]) -> dict[str, BuffState]:
 
 
 def simulate_plan(players: Sequence[PlayerState], plan: SolverPlan,
-                  *, require_weak: bool = True, tolerance: int = 2) -> SimulationResult:
+                  *, require_weak: bool = True, tolerance: int = 2, trace_stages: bool = False) -> SimulationResult:
     """Independently replay the full stage sequence and verify every instruction."""
     try:
         if plan.mode not in ("all", "fan", "circle") or plan.snapshot_stage not in ("before_tank", "after_tank"):
@@ -139,12 +140,15 @@ def simulate_plan(players: Sequence[PlayerState], plan: SolverPlan,
             if len(live_tanks) != 1:
                 raise IllegalAction("必须有且仅有一名存活坦克。")
             tank_key = live_tanks[0].player_key
+        stage_states = {'before_tank': states.copy()} if trace_stages else {}
         weak = strong = 0
         if plan.snapshot_stage == "before_tank" and tank_key is not None:
             event = receive_buff(states[tank_key], "red", 3)
             states[tank_key] = event.state
             weak += event.weak
             strong += event.strong
+        if trace_stages:
+            stage_states['after_tank'] = states.copy()
 
         initially_isolated = {key for key, state in states.items() if state.isolated}
         actions = {action.player_key: action for action in plan.actions}
@@ -169,6 +173,8 @@ def simulate_plan(players: Sequence[PlayerState], plan: SolverPlan,
                 states[action.player_key] = event.state
                 weak += event.weak
                 strong += event.strong
+        if trace_stages:
+            stage_states['after_fan'] = states.copy()
 
         if len(plan.centers) != 3 or len(set(plan.centers)) != 3:
             raise IllegalAction("幽影斩必须安排三名不同的点名中心。")
@@ -204,7 +210,7 @@ def simulate_plan(players: Sequence[PlayerState], plan: SolverPlan,
         if require_weak and abs(red - black) > tolerance:
             raise IllegalAction(f"最终赤幽持有人数差仍超过{tolerance}，未达到安全结算。")
         return SimulationResult(True, final_states=states, red_count=red, black_count=black,
-                                weak_cancellations=weak, strong_cancellations=strong)
+                                weak_cancellations=weak, strong_cancellations=strong, stage_states=stage_states)
     except (IllegalAction, KeyError) as error:
         return SimulationResult(False, reason=str(error))
 

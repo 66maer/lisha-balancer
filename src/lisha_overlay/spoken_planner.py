@@ -89,17 +89,35 @@ def buff_instruction(players, plan):
 class CallPlanner:
     def __init__(self, players):
         self.players = {player.player_key: player for player in players if player.alive}
-        self.specs = {key: catalogue().get(p.xinfa) for key, p in self.players.items() if p.xinfa}
-        self.nicknames = {spec.nickname for spec in catalogue().values()}
+        specs = catalogue()
+        self.specs = {key: specs.get(p.xinfa) for key, p in self.players.items() if p.xinfa}
+        self.nicknames = {spec.nickname for spec in specs.values()}
+        self.healing_schools = {spec.school for spec in specs.values() if spec.role == 'healer'}
         self.teams = {key: int(key[1]) for key in self.players}
         self._calls = {}
 
-    def groups(self, selected, states, eligible):
+    def groups(self, selected, states, eligible, *, nickname=None):
         selected = frozenset(selected)
         eligible = frozenset(eligible)
-        signature = selected, eligible, tuple(sorted((key, states[key].value) for key in eligible))
+        signature = selected, eligible, tuple(sorted((key, states[key].value) for key in eligible)), nickname
         if signature in self._calls:
             return self._calls[signature]
+        if nickname is None:
+            schools = defaultdict(lambda: defaultdict(set))
+            for key in selected:
+                spec = self.specs.get(key)
+                if spec and spec.school in self.healing_schools:
+                    schools[spec.school][spec.nickname].add(key)
+            split = {name: keys for hearts in schools.values() if len(hearts) > 1 for name, keys in hearts.items()}
+            if split:
+                other = selected.difference(*split.values())
+                calls = self.groups(other, states, eligible) + tuple(
+                    call for name, keys in split.items()
+                    for call in self.groups(keys, states, eligible, nickname=name)
+                )
+                result = tuple(sorted(calls, key=lambda call: min(call.players)))
+                self._calls[signature] = result
+                return result
         choices = {}
 
         def add(keys, text, effort):
@@ -116,18 +134,21 @@ class CallPlanner:
             spec = self.specs.get(key)
             if spec:
                 by_name[spec.nickname].add(key)
-                if spec.school not in self.nicknames:
+                if spec.school not in self.nicknames and spec.school not in self.healing_schools:
                     by_name[spec.school].add(key)
-        for value, members in by_buff.items():
-            add(members, _buff(value), 2 if len(members) == 1 else 1)
-        for team, members in by_team.items():
-            add(members, f'{team}队', 2 if len(members) == 1 else 1)
-            for value, match in by_buff.items():
-                add(members & match, f'{team}队{_buff(value)}', 2)
+        if nickname is None:
+            for value, members in by_buff.items():
+                add(members, _buff(value), 2 if len(members) == 1 else 1)
+            for team, members in by_team.items():
+                add(members, f'{team}队', 2 if len(members) == 1 else 1)
+                for value, match in by_buff.items():
+                    add(members & match, f'{team}队{_buff(value)}', 2)
 
         all_known = all(self.specs.get(key) for key in eligible)
         known_teams = {team for team, members in by_team.items() if all(self.specs.get(key) for key in members)}
         for name, members in by_name.items():
+            if nickname is not None and name != nickname:
+                continue
             specificity = 0 if name in self.nicknames else 1
             if all_known:
                 if len(members) == 1:
@@ -149,7 +170,7 @@ class CallPlanner:
             if not remaining:
                 return ()
             # An explicit list also identifies every individual if no short exact selector exists.
-            best = (Call(_numbered(remaining), remaining, 1 + 2 * len(remaining)),)
+            best = (Call(_numbered(remaining) + (nickname or ''), remaining, 1 + 2 * len(remaining)),)
             if budget:
                 for keys, call in choices.items():
                     if keys <= remaining:
