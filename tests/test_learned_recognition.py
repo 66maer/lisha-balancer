@@ -52,6 +52,42 @@ def test_three_scale_views_of_the_roster_use_one_onnx_call():
     assert all(r['scale_agreement'][1]==3 for r in rows)
 
 
+def test_subset_inference_uses_panel_geometry_without_classifying_the_other_rows(monkeypatch):
+    import lisha_overlay.learned_recognition as module
+
+    recognizer = LearnedRecognizer(scale_offsets=(-1, 0, 1))
+    images = [np.random.default_rng(i).integers(0, 256, (38, 128, 3), dtype=np.uint8) for i in range(3)]
+    original = module._measure_top
+    geometry_sizes = []
+
+    def measure_top(rows, side, lookup):
+        geometry_sizes.append(len(rows))
+        return original(rows, side, lookup)
+
+    monkeypatch.setattr(module, '_measure_top', measure_top)
+    full = recognizer.predict(images)
+    full_candidates = recognizer.last_inference['candidates']
+    subset = recognizer.predict([images[1]], geometry_images=images)
+
+    assert geometry_sizes == [3] * 6
+    assert recognizer.last_inference['candidates'] < full_candidates
+    assert len(subset) == 1
+    for key in ('state', 'isolated', 'scale_agreement', 'selected_bbox'):
+        assert subset[0].get(key) == full[1].get(key)
+
+
+def test_different_measured_icon_sizes_share_one_recognition_batch():
+    recognizer = LearnedRecognizer(scale_offsets=(-1, 0, 1))
+    recognizer.fixed_icon_side = 31
+    images = [np.random.default_rng(i).integers(0, 256, (38, 128, 3), dtype=np.uint8) for i in range(2)]
+
+    rows = recognizer.predict(images, first_icons={1: (3, 2, 24)})
+
+    assert recognizer.last_inference['calls'] == 1
+    assert [view['side'] for view in rows[0]['scale_variants']] == [30, 31, 32]
+    assert [view['side'] for view in rows[1]['scale_variants']] == [23, 24, 25]
+
+
 def test_scale_disagreement_retains_the_highest_probability_whole_prediction():
     recognizer=LearnedRecognizer(scale_offsets=(-1,0,1))
     variants=[dict(state=s,isolated=iso,isolation_confirmed=True,confidence=score,icon_side=30+i)

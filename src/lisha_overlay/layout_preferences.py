@@ -63,11 +63,14 @@ class CalibrationPreview(QWidget):
                                  QColor("#f1c779"))
 
     def mousePressEvent(self, event):
-        if event.button() != Qt.MouseButton.RightButton or self.target.isEmpty():
+        if self.target.isEmpty() or event.button() not in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
             return super().mousePressEvent(event)
         cell = next((cell for cell in self.team_layout.cells(self.target)
                      if cell.rect.contains(event.position())), None)
         if cell is None:
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.tank_selected.emit(cell.key)
             return
         menu = QMenu(self)
         for color, label in (("red", "赤"), ("black", "幽")):
@@ -146,21 +149,19 @@ class LayoutPreferencesDialog(PreferencesDialog):
         self.tank_box = QComboBox()
         self.tank_box.setObjectName("tankCellCombo")
         self._fill_tanks(tank_key)
-        self.tank_box.setParent(self)
-        self.tank_box.hide()
         self.stage_box = QComboBox()
         self.stage_box.setObjectName("skillStageCombo")
         self.stage_box.addItem("一式前（T +3 赤）", "before_tank")
         self.stage_box.addItem("一式后", "after_tank")
         self.stage_box.setCurrentIndex(max(0, self.stage_box.findData(snapshot_stage)))
-        self.stage_box.setParent(self)
-        self.stage_box.hide()
         self.isolation_box = QCheckBox("隔绝已核对（本次）")
         self.isolation_box.setObjectName("isolationConfirmedCheck")
         self.isolation_box.setChecked(isolation_confirmed)
         form.addRow(self.isolation_box)
         form.takeRow(self.isolation_box)
         form.insertRow(2, self.isolation_box)
+        form.insertRow(3, '主T', self.tank_box)
+        form.insertRow(4, '手动扇形阶段', self.stage_box)
         controls.addLayout(form)
         self.validation_label = QLabel()
         self.validation_label.setStyleSheet("color: #f0b078; font-size: 10px;")
@@ -183,7 +184,8 @@ class LayoutPreferencesDialog(PreferencesDialog):
         grid_layout.addWidget(scroll, 0)
         self.preview = CalibrationPreview(self._selected_layout, frame)
         self.preview.setObjectName("layoutPreview")
-        self.preview.tank_key = None
+        self.preview.tank_key = self.tank_box.currentData()
+        self.preview.setToolTip('左键点选主T，右键校正Buff')
         self.preview.overrides = self.overrides
         self.preview.tank_selected.connect(self._select_tank)
         self.preview.override_changed.connect(self._override_changed)
@@ -248,12 +250,13 @@ class LayoutPreferencesDialog(PreferencesDialog):
         current_tank = self.tank_box.currentData()
         self._populate_formations(total)
         self._fill_tanks(current_tank)
+        self._update_tank_preview()
         self._rebuild()
 
     def _fill_tanks(self, selected):
         self.tank_box.blockSignals(True)
         self.tank_box.clear()
-        self.tank_box.addItem("—", None)
+        self.tank_box.addItem("未指定", None)
         for group in range(1, self.columns_box.value() + 1):
             for slot in range(1, 6):
                 self.tank_box.addItem(f"{group} 队 · {slot}", f"g{group}p{slot}")
@@ -266,7 +269,7 @@ class LayoutPreferencesDialog(PreferencesDialog):
             self.tank_box.setCurrentIndex(index)
 
     def _update_tank_preview(self):
-        self.preview.tank_key = None
+        self.preview.tank_key = self.tank_box.currentData()
         self.preview.update()
 
     def _override_changed(self, key, value):

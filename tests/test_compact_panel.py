@@ -1,6 +1,7 @@
 """Compact toolbar controls remain available without growing into a dashboard."""
 
-from PySide6.QtCore import QPoint, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QPointF, QSize, Qt, QTimer
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QAbstractButton, QLabel, QMessageBox, QWidget
 
 from lisha_overlay import __version__
@@ -15,7 +16,7 @@ def test_full_title_and_about_button_fit_the_compact_header(qt_app):
         header = panel.findChild(QWidget, "dragHandle")
         title = panel.findChild(QLabel, "panelTitle")
 
-        assert panel.size() == QSize(360, 178)
+        assert panel.size() == QSize(360, 206)
         assert panel.windowTitle() == title.text() == "戾煞配平助手"
         assert title.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         assert title.width() >= title.fontMetrics().horizontalAdvance(title.text())
@@ -23,6 +24,7 @@ def test_full_title_and_about_button_fit_the_compact_header(qt_app):
         assert header.rect().contains(panel.about_button.geometry())
         assert title.geometry().right() < panel.about_button.geometry().left()
         assert panel.about_button.geometry().right() < panel.pin_button.geometry().left()
+        assert panel.about_button.x() - title.geometry().right() >= 150
     finally:
         panel.hide()
         panel.deleteLater()
@@ -56,8 +58,8 @@ def test_trial_toolbar_hides_settings_test_and_attachment_controls(qt_app):
         panel.show()
         qt_app.processEvents()
 
-        assert panel.size() == QSize(360, 178)
-        assert panel.sizeHint() == QSize(360, 178)
+        assert panel.size() == QSize(360, 206)
+        assert panel.sizeHint() == QSize(360, 206)
         names = ("aboutButton", "pinButton", "closeButton")
         controls = [panel.findChild(QAbstractButton, name) for name in names]
         assert all(button is not None and button.isVisible() for button in controls)
@@ -69,16 +71,28 @@ def test_trial_toolbar_hides_settings_test_and_attachment_controls(qt_app):
                    for name in ('settingsButton','testButton','attachButton'))
 
         header = panel.findChild(QWidget, "dragHandle")
+        policies = panel.findChild(QWidget, "policyControls")
         modes = panel.findChild(QWidget, "modeSegments")
         summary = panel.findChild(QLabel, "summaryLabel")
         summary_area = panel.findChild(QWidget, 'summaryArea')
         buffs = panel.findChild(QWidget, 'buffCountsRow')
-        assert header.geometry().bottom() < modes.geometry().top()
+        assert header.geometry().bottom() < policies.geometry().top()
+        assert policies.geometry().bottom() < modes.geometry().top()
         assert modes.geometry().bottom() < summary_area.geometry().top()
         assert panel.rect().contains(summary_area.geometry())
         assert summary.mapTo(panel, QPoint()).y() + summary.height() <= buffs.mapTo(panel, QPoint()).y()
-        assert len([button for button in panel.findChildren(QAbstractButton) if button.isVisible()]) == 8
-        assert not panel.tank_button.isVisible()
+        assert len([button for button in panel.findChildren(QAbstractButton) if button.isVisible()]) == 11
+        policy_buttons = (panel.timeline_button, panel.strategy_button, panel.difficulty_button)
+        assert tuple(button.text() for button in policy_buttons) == ('手动/自动', '正平/简操', '普通/英雄')
+        divider = panel.findChild(QWidget, 'actionDivider')
+        action_controls = (*panel.mode_buttons.values(), divider, panel.tank_button,
+                           panel.start_button, panel.grid_button)
+        for row, items in ((policies, policy_buttons), (modes, action_controls)):
+            assert all(item.parentWidget() is row and row.rect().contains(item.geometry()) for item in items)
+            assert all(left.geometry().right() < right.x() for left, right in zip(items, items[1:]))
+        assert panel.mode_buttons['all'].text() == '扇+圈'
+        assert panel.mode_buttons['circle'].text() == '仅圈'
+        assert panel.tank_button.text() == '标T'
         instruction=panel.findChild(QLabel,'instructionLabel')
         assert summary_area.geometry().bottom()<instruction.mapTo(panel, QPoint()).y()
         assert panel.rect().contains(panel._command_area.geometry())
@@ -95,23 +109,36 @@ def test_programmatic_toolbar_state_does_not_emit_user_actions(qt_app):
     panel.mode_changed.connect(lambda mode: calls.append(("mode", mode)))
     panel.test_toggled.connect(lambda enabled: calls.append(("test", enabled)))
     panel.pin_toggled.connect(lambda pinned: calls.append(("pin", pinned)))
+    panel.timeline_toggled.connect(lambda enabled: calls.append(("timeline", enabled)))
+    panel.strategy_toggled.connect(lambda exact: calls.append(("strategy", exact)))
     try:
         assert panel.mode_buttons["all"].isChecked()
         assert panel.pin_button.isChecked()
         assert not panel.test_button.isChecked()
+        assert panel.timeline_button.isChecked()
+        assert panel.strategy_button.isChecked()
+        assert panel.strategy_button.accessibleName() == '当前简操模式'
 
         panel.set_mode("circle")
         panel.set_test_state(True)
         panel.set_pinned(False)
+        panel.set_auto_timeline(False)
+        panel.set_exact_preference(True)
         assert calls == []
         assert panel.mode_buttons["circle"].isChecked()
         assert panel.test_button.isChecked()
         assert not panel.pin_button.isChecked()
+        assert not panel.timeline_button.isChecked()
+        assert panel.timeline_button.accessibleName() == '当前手动阶段'
+        assert not panel.strategy_button.isChecked()
+        assert panel.strategy_button.accessibleName() == '当前正平模式'
 
         panel.mode_buttons["all"].click()
         panel.test_button.click()
         panel.pin_button.click()
-        assert calls == [("mode", "all"), ("test", False), ("pin", True)]
+        panel.timeline_button.click()
+        panel.strategy_button.click()
+        assert calls == [("mode", "all"), ("test", False), ("pin", True), ("timeline", True), ("strategy", False)]
     finally:
         panel.deleteLater()
 
@@ -148,7 +175,7 @@ def test_start_stop_action_is_independent_of_mode_selection(qt_app):
     panel.deleteLater()
 
 
-def test_grid_action_fits_without_tank_control_and_busy_state_blocks_it(qt_app):
+def test_grid_and_tank_actions_fit_and_busy_state_blocks_selection(qt_app):
     panel = ControlPanel()
     calls = []
     panel.grid_requested.connect(lambda: calls.append("grid"))
@@ -156,9 +183,10 @@ def test_grid_action_fits_without_tank_control_and_busy_state_blocks_it(qt_app):
     try:
         panel.show()
         qt_app.processEvents()
-        assert panel.size() == QSize(360, 178)
-        assert panel.grid_button.toolTip() == "自动定位团队格子"
-        assert not panel.tank_button.isVisible()
+        assert panel.size() == QSize(360, 206)
+        assert not panel.grid_button.text() and not panel.grid_button.icon().isNull()
+        assert "定位团队格子并识别心法" in panel.grid_button.toolTip()
+        assert panel.tank_button.isVisible()
         segments = panel.findChild(QWidget, "modeSegments")
         assert not panel.start_button.isEnabled()
         panel.set_grid_ready(True)
@@ -189,6 +217,28 @@ def test_grid_action_fits_without_tank_control_and_busy_state_blocks_it(qt_app):
         panel.deleteLater()
 
 
+def test_header_blank_space_moves_panel_during_live_analysis(qt_app):
+    panel = ControlPanel()
+    panel.show()
+    try:
+        panel.set_analysis_active(True)
+        header = panel.findChild(QWidget, "dragHandle")
+        point = QPoint(170, header.height() // 2)
+        assert header.childAt(point) is None
+        left = Qt.MouseButton.LeftButton
+        start = panel.pos()
+        delta = QPoint(35, 40)
+        position = header.mapToGlobal(point)
+        qt_app.sendEvent(header, QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(point), QPointF(position),
+                                             left, left, Qt.KeyboardModifier.NoModifier))
+        qt_app.sendEvent(header, QMouseEvent(QEvent.Type.MouseMove, QPointF(point + delta), QPointF(position + delta),
+                                             Qt.MouseButton.NoButton, left, Qt.KeyboardModifier.NoModifier))
+        assert panel.pos() == start + delta
+    finally:
+        panel.hide()
+        panel.deleteLater()
+
+
 def test_count_colours_signed_difference_and_no_solution_survive_detail_update(qt_app):
     from lisha_overlay.analysis import AnalysisResult
     panel=ControlPanel()
@@ -209,19 +259,22 @@ def test_count_colours_signed_difference_and_no_solution_survive_detail_update(q
 
 
 def test_live_solution_keeps_buff_types_and_overlap_in_instruction_tooltip(qt_app):
-    from lisha_overlay.live_strategy import evaluate_current
+    from lisha_overlay.live_strategy import evaluate_simple_commands
     from test_strategy_policy import roster
     panel=ControlPanel()
     try:
         panel.show();qt_app.processEvents()
-        result=evaluate_current(roster([1]*15+[-1]*10))
+        result=evaluate_simple_commands(roster([1]*15+[-1]*10))
         panel.set_result(result);qt_app.processEvents()
-        assert panel.size() == QSize(360, 178)
-        assert '<img ' in panel._instruction_labels[1].text()
+        assert panel.size() == QSize(360, 206)
+        assert '<img ' not in panel._instruction_labels[1].text()
+        assert '<img ' in panel._buff_plan_labels[1].text()
         assert result.instruction in panel._instruction_label.toolTip()
+        assert '圆内数字为煞气层数' in panel._buff_plan_labels[1].toolTip()
         panel.set_summary('画面待确认')
         assert panel._instruction_label.text()==''
-        assert panel.size() == QSize(360, 178)
+        assert all(not label.text() for label in panel._buff_plan_labels)
+        assert panel.size() == QSize(360, 206)
     finally:panel.deleteLater()
 
 
@@ -251,7 +304,7 @@ def test_reference_hint_is_visible_with_rich_counts_and_clears_with_status(qt_ap
         assert panel._reference_label.isVisible() and '✓' in panel._summary_label.text()
         assert panel._summary_label.geometry().right() < panel._reference_label.geometry().left()
         assert '参考' in panel._summary_label.toolTip()
-        assert panel.size() == QSize(360, 178)
+        assert panel.size() == QSize(360, 206)
         panel.set_summary('格子待定位')
         assert panel._reference_label.isHidden()
     finally:panel.deleteLater()
@@ -303,7 +356,7 @@ def test_difficulty_toggle_reclassifies_current_and_final_difference_without_res
         panel.set_difficulty('normal')
         assert changes == ['heroic']
         assert '✓' in panel._summary_label.text()
-        assert panel.size() == QSize(360, 178)
+        assert panel.size() == QSize(360, 206)
     finally:
         panel.deleteLater()
 
@@ -311,7 +364,8 @@ def test_difficulty_toggle_reclassifies_current_and_final_difference_without_res
 def test_three_command_rows_and_final_counts_keep_the_panel_size_fixed(qt_app):
     from lisha_overlay.analysis import AnalysisResult
     panel = ControlPanel()
-    instruction = '\n'.join([
+    instruction = '1队唐门吃扇\n2队冰心、奶花引导\n2队刀宗蹭2圈'
+    buff_instruction = '\n'.join([
         '{红1} × 3、{黑2} × 2 吃扇',
         '{黑1} × 3 引导圈',
         '{红3} × 5 蹭单圈，{红2} × 2 蹭双圈',
@@ -319,15 +373,24 @@ def test_three_command_rows_and_final_counts_keep_the_panel_size_fixed(qt_app):
     try:
         panel.show()
         panel.set_result(AnalysisResult('候选结果', status='solved', current_red=10, current_black=15,
-                                        instruction=instruction, reference=True, final_red=10, final_black=11))
+                                        instruction=instruction, buff_instruction=buff_instruction,
+                                        reference=True, final_red=10, final_black=11))
         qt_app.processEvents()
-        rich = '\n'.join(label.text() for label in panel._instruction_labels)
+        rich = '\n'.join(label.text() for label in panel._buff_plan_labels)
         assert rich.count('<img ') == 5
         assert '{红1}' not in rich and '{黑2}' not in rich
         assert '× 3' in rich and '× 2' in rich
         assert len(panel._instruction_labels) == 3
         assert all(label.height() == 22 for label in panel._instruction_labels)
-        assert panel.size() == QSize(360, 178)
+        assert [label.text() for label in panel._instruction_labels] == instruction.splitlines()
+        divider = panel.findChild(QWidget, 'commandDivider')
+        assert divider.height() == panel._command_area.height()
+        for spoken, buff in zip(panel._instruction_labels, panel._buff_plan_labels):
+            left, right = spoken.mapTo(panel, QPoint()), buff.mapTo(panel, QPoint())
+            assert left.y() == right.y() and left.x() + spoken.width() <= right.x()
+            assert right.x() + buff.width() <= panel.width()
+            assert spoken.width() > buff.width()
+        assert panel.size() == QSize(360, 206)
         assert panel._result_label.parentWidget() is panel._summary_area
         assert panel._summary_area.rect().contains(panel._result_label.geometry())
         assert panel._result_label.geometry().left() > panel._buff_counts_row.geometry().right()
@@ -335,8 +398,31 @@ def test_three_command_rows_and_final_counts_keep_the_panel_size_fixed(qt_app):
         assert '差 -1' in panel._result_label.text() and '✓' in panel._result_label.text()
         assert instruction in panel._instruction_label.toolTip()
         panel.set_summary('画面待确认')
-        assert panel.size() == QSize(360, 178)
+        assert panel.size() == QSize(360, 206)
         assert '红 10' not in panel._result_label.text()
+    finally:
+        panel.hide()
+        panel.deleteLater()
+
+
+def test_long_instruction_wraps_at_normal_font_size_with_aligned_buff_rows(qt_app):
+    from lisha_overlay.analysis import AnalysisResult
+
+    panel = ControlPanel()
+    try:
+        panel.show()
+        line = '1队唐门、2队奶花、3队冰心、4队无相楼、5队气纯吃扇'
+        panel.set_result(AnalysisResult('方案', instruction=f'{line}\n奶药引导',
+                                        buff_instruction='{红1}×4 吃扇\n{黑1}×3 引导'))
+        qt_app.processEvents()
+        left, right = panel._instruction_labels[0], panel._buff_plan_labels[0]
+        assert left.text() == line and left.wordWrap()
+        assert left.font().pixelSize() == 11 and right.font().pixelSize() == 10
+        assert left.heightForWidth(left.width()) == left.height() > 22
+        assert left.height() == right.height()
+        assert panel.height() > 206
+        panel.set_summary('待识别')
+        assert panel.size() == QSize(360, 206)
     finally:
         panel.hide()
         panel.deleteLater()

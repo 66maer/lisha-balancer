@@ -39,7 +39,7 @@ where = ["src"]
 version = {attr = "lisha_overlay.__version__"}
 
 [tool.setuptools.package-data]
-lisha_overlay = ["assets/buffs/*.png", "assets/buffs/*.json", "assets/learned/*.onnx", "assets/learned/*.json", "assets/learned/*.png", "assets/strategy/*.json", "assets/strategy/*/*.json", "assets/strategy/*/*.npz", "assets/strategy/*/*.npy"]
+lisha_overlay = ["assets/buffs/*.png", "assets/buffs/*.json", "assets/learned/*.onnx", "assets/learned/*.json", "assets/learned/*.png", "assets/strategy/*.json", "assets/strategy/*/*.json", "assets/strategy/*/*.npz", "assets/strategy/*/*.npy", "assets/xinfa/*.json", "assets/xinfa/*.onnx", "assets/xinfa/*.npz"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

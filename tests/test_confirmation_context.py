@@ -55,7 +55,8 @@ def _controller():
     )
     controller._region = _region(scan, 4)
     controller._set_running = lambda running: setattr(controller, "running", running)
-    for name in ("_invalidate_analysis", "_on_capture_error", "_update_region", "_refresh_summary", "_preview_layout"):
+    for name in ("_invalidate_analysis", "_on_capture_error", "_update_region", "_refresh_summary", "_preview_layout",
+                 "_start_capture"):
         setattr(controller, name, MethodType(getattr(OverlayController, name), controller))
     return controller
 

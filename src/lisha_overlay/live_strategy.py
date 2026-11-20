@@ -10,6 +10,8 @@ from .solver import BuffState, PlayerAction, SolverPlan, receive_buff, simulate_
 from .spoken_catalogue import SpokenCatalogue
 from .step_strategy import command_lines, compact_row, solve_steps
 from .strategy_catalogue import Catalogue
+from .spoken_planner import CallPlanner, buff_instruction
+from .xinfa import guide_cost
 
 
 @lru_cache(maxsize=1)
@@ -30,7 +32,7 @@ def _reviewed_result(players, mode, counts, red, black, *, prefer_exact=False, t
         dict(key=p.player_key, value=0 if p.color == "none" else p.stacks * (-1 if p.color == "black" else 1))
         for p in players
     ]
-    data = solve_steps(roster, mode, prepare_live_strategy(), tolerance=tolerance)
+    data = solve_steps(roster, mode, prepare_live_strategy(), tolerance=tolerance, prefer_exact=prefer_exact)
     if data['status'] == 'complex':
         return None
     strategy = dict(
@@ -143,28 +145,58 @@ def _reviewed_result(players, mode, counts, red, black, *, prefer_exact=False, t
         current_red=red,
         current_black=black,
         instruction='\n'.join(command_lines([row for cue in cues for row in cue['rows']])),
+        buff_instruction=buff_instruction(players, plan) if annotations else '',
         balanced=neutral_balance,
         strategy=strategy,
     )
 
 
-def _evaluate(players, mode, *, prefer_exact=False, difficulty='normal'):
+def _evaluate(players, mode, *, snapshot_stage, prefer_exact=False, difficulty='normal', spoken=False):
     players = list(players)
     tolerance = SAFE_TOLERANCE[difficulty]
+    tanks = [p for p in players if p.is_tank]
+    tank = tanks[0] if tanks else None
+    tank_phase = mode != 'circle' and tank is not None
+    if tank_phase and len(tanks) == 1:
+        group, slot = tank.player_key[1:].split('p')
+        label = f'{group}队{slot} 主T'
+        if tank.alive is False:
+            return AnalysisResult('主T重伤', status='tank_warning', instruction='换T',
+                                  details=f'{label}已重伤，请换T并重新点选。')
+        if snapshot_stage == 'before_tank' and tank.color == 'red' and tank.stacks in (2, 3, 4, 5):
+            return AnalysisResult(f'{label} · 赤{tank.stacks}', status='tank_warning',
+                                  instruction='换T，要炸',
+                                  details=f'{label}已有{tank.stacks}层赤，一式再叠3层将达到自爆阈值。')
+
+    if spoken:
+        return _spoken_result(players, mode, snapshot_stage, tank_phase, prefer_exact, tolerance)
 
     def provider(snapshot, selected_mode, counts, red, black):
         return _reviewed_result(snapshot, selected_mode, counts, red, black,
                                 prefer_exact=prefer_exact, tolerance=tolerance)
 
     result = evaluate(
-        players, mode, snapshot_stage="after_tank", current_snapshot=True, current_strategy=provider,
-        tolerance=tolerance, avoid_overlap=True,
+        players, mode, snapshot_stage=snapshot_stage, current_snapshot=not tank_phase,
+        current_strategy=provider, tolerance=tolerance, avoid_overlap=True, prefer_exact=prefer_exact,
     )
+    if prefer_exact and result.strategy and result.difference:
+        expanded = evaluate(players, mode, snapshot_stage=snapshot_stage, current_snapshot=True,
+                            tolerance=tolerance, avoid_overlap=True, prefer_exact=True)
+        if expanded.difference is not None and expanded.difference < result.difference:
+            result = expanded
+    if mode != 'circle' and tank is None and snapshot_stage == 'before_tank' and result.status in ('solved', 'no_solution'):
+        result.reference = True
+        result.details = '主T未选，本方案按团框现状计算，点选主T后可预演一式。\n' + result.details
     if result.strategy or result.status not in ("solved", "no_solution"):
         return result
-    result.strategy = dict(policy="verified_extended_state_fallback")
-    result.reference = True
-    result.details = "使用扩展状态后备验算。\n" + result.details
+    result.strategy = dict(policy="verified_tank_simulation" if tank_phase else "verified_extended_state_fallback",
+                           preference="exact" if prefer_exact else "minimum")
+    if tank_phase and result.current_red is not None:
+        diff = result.current_red - result.current_black
+        result.summary = f'红 {result.current_red}  黑 {result.current_black}  差 {diff:+d}'
+    if not tank_phase:
+        result.reference = True
+        result.details = "使用扩展状态后备验算。\n" + result.details
     if result.balanced and result.plan is None:
         result.instruction = '无需吃扇\n引导圈需另排\n无需蹭圈'
     if result.plan is not None:
@@ -178,6 +210,7 @@ def _evaluate(players, mode, *, prefer_exact=False, difficulty='normal'):
         checked = simulate_plan(players, result.plan, tolerance=tolerance)
         if not checked.valid:
             raise ValueError("扩展状态站位复核失败：" + checked.reason)
+        result.final_red, result.final_black, result.difference = checked.red_count, checked.black_count, checked.difference
         if not result.balanced:
             result.annotations = []
             for action in actions:
@@ -202,6 +235,9 @@ def _evaluate(players, mode, *, prefer_exact=False, difficulty='normal'):
             for p in players
         ]
         states = [BuffState(p["value"], source.isolated, source.alive) for p, source in zip(roster, players)]
+        if tank_phase and snapshot_stage == 'before_tank':
+            index = by_key[tank.player_key]
+            states[index] = receive_buff(states[index], 'red', 3).state
         after_fan = list(states)
         for action in actions:
             if action.fan:
@@ -229,14 +265,70 @@ def _evaluate(players, mode, *, prefer_exact=False, difficulty='normal'):
             if selected
         ]
         result.instruction = '\n'.join(command_lines(rows))
+        if result.annotations:
+            result.buff_instruction = buff_instruction(players, result.plan)
         result.strategy["rows"] = rows
         result.details += "\n统一站位：1主点、2单走、3旁点。双圈用1与3交集，三圈用三角交集。"
     return result
 
 
 def evaluate_current(players, mode="all", *, snapshot_stage="after_tank", difficulty='normal'):
-    return _evaluate(players, mode, difficulty=difficulty)
+    return _evaluate(players, mode, snapshot_stage=snapshot_stage, difficulty=difficulty)
 
 
 def evaluate_exact(players, mode="all", *, snapshot_stage="after_tank", difficulty='normal'):
-    return _evaluate(players, mode, prefer_exact=True, difficulty=difficulty)
+    return _evaluate(players, mode, snapshot_stage=snapshot_stage, prefer_exact=True, difficulty=difficulty)
+
+
+def _spoken_result(players, mode, stage, tank_phase, exact, tolerance):
+    planner = CallPlanner(players)
+
+    def rank(plan, simulation):
+        effort = planner.compile(plan)[2]
+        score = (simulation.strong_cancellations, *effort)
+        return (simulation.difference, *score) if exact else (*score, simulation.difference)
+
+    result = evaluate(players, mode, snapshot_stage=stage, current_snapshot=not tank_phase,
+                      tolerance=tolerance, avoid_overlap=True, prefer_exact=exact, plan_rank=rank,
+                      guide_penalties={player.player_key: guide_cost(player) for player in players})
+    if not tank_phase and mode != 'circle' and stage == 'before_tank' and result.status in ('solved', 'no_solution'):
+        result.reference = True
+        result.details = '主T未选，按团框现状计算。\n' + result.details
+    if result.plan is None:
+        return result
+    if any(player.xinfa for player in players):
+        original = result.plan
+        alternate = planner.refine(original, lambda plan: planner.compile(plan)[2])
+        if alternate != original:
+            checked = simulate_plan(players, alternate, tolerance=tolerance)
+            if checked.valid and (checked.red_count, checked.black_count) == (result.final_red, result.final_black):
+                result.plan = alternate
+                result.annotations = [annotation for action in alternate.actions for annotation in (
+                    ([PlanAnnotation(action.player_key, 'fan')] if action.fan else []) + [
+                        PlanAnnotation(action.player_key, 'circle', order,
+                                       'center' if action.player_key in alternate.centers else 'helper')
+                        for order in action.circles
+                    ]
+                )]
+                original_centers = '；'.join(f'{order}号中心 {key}' for order, key in enumerate(original.centers, 1))
+                new_centers = '；'.join(f'{order}号中心 {key}' for order, key in enumerate(alternate.centers, 1))
+                result.details = result.details.replace(original_centers, new_centers)
+    result.instruction, groups, effort = planner.compile(result.plan)
+    result.buff_instruction = buff_instruction(players, result.plan)
+    result.balanced = (
+        result.plan.current_snapshot and not any(player.xinfa for player in players)
+        and all(not action.fan and action.player_key in result.plan.centers for action in result.plan.actions)
+        and result.difference == abs(result.current_red - result.current_black)
+    )
+    result.strategy = dict(policy='spoken_groups', preference='exact' if exact else 'simple',
+                           groups=groups, group_count=len(groups), effort=effort[0],
+                           guide_keys=list(result.plan.centers))
+    return result
+
+
+def evaluate_simple_commands(players, mode='all', *, snapshot_stage='after_tank', difficulty='normal'):
+    return _evaluate(players, mode, snapshot_stage=snapshot_stage, difficulty=difficulty, spoken=True)
+
+
+def evaluate_exact_commands(players, mode='all', *, snapshot_stage='after_tank', difficulty='normal'):
+    return _evaluate(players, mode, snapshot_stage=snapshot_stage, prefer_exact=True, difficulty=difficulty, spoken=True)

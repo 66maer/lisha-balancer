@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QRectF
 from lisha_overlay.team_layout import TeamLayout
-from lisha_overlay.learned_geometry import calibrated_bands
+from lisha_overlay.learned_geometry import calibrated_bands, fit_buff_band
 
 
 def fixture():
@@ -33,3 +33,23 @@ def test_small_grid_translation_keeps_physical_baselines_and_picture_scale():
     assert side==new_side
     for (_,before),(_,after) in zip(bands,moved):
         assert before[0]==after[0] and before[1]==after[1]
+
+
+def test_fit_keeps_a_larger_icon_and_padding_within_its_player_tile():
+    layout = TeamLayout.uniform((5,), left=0, right=0, top=0, bottom=0,
+                                column_gap=0, row_gap=0, footer=0)
+    cell = layout.cells(QRectF(0, 0, 600, 250))[0]
+
+    bounds, anchor = fit_buff_band([10, 22, 120, 45], cell, [(5, 16, 31)], 22, 250)
+
+    assert bounds == [3, 14, 120, 49]
+    assert anchor == (1, 1, 31)
+
+
+def test_conflicting_first_slot_rims_leave_the_team_geometry_in_place():
+    layout = TeamLayout.uniform((5,), left=0, right=0, top=0, bottom=0,
+                                column_gap=0, row_gap=0, footer=0)
+    cell = layout.cells(QRectF(0, 0, 600, 250))[0]
+    bounds = [8, 23, 120, 50]
+
+    assert fit_buff_band(bounds, cell, [(7, 22, 22), (7, 25, 22)], 22, 250) == (bounds, None)

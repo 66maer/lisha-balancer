@@ -32,6 +32,12 @@ __all__ = ["ControlPanel", "PreviewWindow"]
 _MUTED = "#8996aa"
 _TEAL = "#63dfcb"
 _YELLOW = "#e8c47a"
+_PANEL_SIZE = QSize(360, 206)
+_SIDE_MARGIN = 8
+_COMMAND_ROW_HEIGHT = 22
+_COMMAND_GAP = 6
+_BUFF_COLUMN_WIDTH = 126
+_BUFF_TAG = re.compile(r'[\[{｛](红|黑)([1-5一二三四五])(×\d+)?[\]}｝]')
 
 _STYLE = """
 QWidget { color: #e8edf5; font-family: 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif; font-size: 12px; }
@@ -49,12 +55,21 @@ QToolButton:checked { background: #1d3a37; }
 QToolButton#testButton:checked { background: #3a3222; }
 QToolButton#attachButton[attached="true"] { background: #1a2c34; }
 QToolButton#tankButton { color: #9cabb9; font-size: 11px; font-weight: 700; }
+QToolButton#tankButton[assigned="true"] { color: #f3d38a; }
 QToolButton#tankButton[selecting="true"] { color: #f3d38a; background: #3a3222; }
 QToolButton:disabled { color: #52687a; background: transparent; }
+QToolButton#gridButton:enabled { background: #22403c; }
+QToolButton#gridButton:hover { background: #34524f; }
 QMessageBox { background: #101923; }
 QWidget#modeSegments { background: #0e1720; border: 1px solid #2c3b48; border-radius: 5px; }
+QToolButton[modeSwitch="true"] { background: #1b2936; }
+QToolButton[modeSwitch="true"]:hover { background: #2a3947; }
+QToolButton[modeSwitch="true"]:disabled { background: #141d29; }
 QToolButton[modeSegment="true"] { color: #8fa3b5; border-radius: 3px; font-size: 11px; }
 QToolButton[modeSegment="true"]:checked { color: #9af0df; background: #25413e; }
+QWidget#actionDivider { background: #314351; }
+QWidget#commandDivider { background: #45596a; }
+QWidget#buffPlanColumn { background: #1a2835; border-radius: 4px; }
 QToolTip { color: #d3e0e9; background: #18232e; border: 1px solid #3c4d5e; padding: 5px; }
 QMenu { color: #dce7ef; background: #14202b; border: 1px solid #3a4d5d; padding: 4px; }
 QMenu::item { color: #dce7ef; background: transparent; padding: 5px 22px 5px 12px; border-radius: 3px; }
@@ -260,17 +275,17 @@ def _image_source(image: QPixmap) -> str:
     return 'data:image/png;base64,' + bytes(buffer.data().toBase64()).decode('ascii')
 
 
-class _CommandLabel(QLabel):
-    """Fit one rich command inside its fixed row without wrapping."""
+class _BuffPlanLabel(QLabel):
+    """Scale dense Buff groups to fit the narrow right column."""
 
     def __init__(self):
         super().__init__()
         self.document = QTextDocument(self)
         self.document.setDocumentMargin(0)
-        self.setFixedHeight(22)
+        self.setFixedHeight(_COMMAND_ROW_HEIGHT)
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self.setStyleSheet('font-size: 11px; font-weight: 700;')
+        self.setStyleSheet('font-size: 10px; font-weight: 700;')
 
     def setText(self, text: str) -> None:
         super().setText(text)
@@ -290,7 +305,20 @@ class _CommandLabel(QLabel):
         self.document.drawContents(painter)
 
 
-class _DifficultyButton(QToolButton):
+class _ModeSwitch(QToolButton):
+    def __init__(self, name: str, left: str, right: str, *, checked_color: str = '#9af0df') -> None:
+        super().__init__()
+        self.setObjectName(name)
+        self.setProperty('modeSwitch', True)
+        self.setText(f'{left}/{right}')
+        self.setCheckable(True)
+        self.setFixedHeight(24)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._left = left
+        self._right = right
+        self._checked_color = checked_color
+
     def paintEvent(self, event: Any) -> None:
         option = QStyleOptionToolButton()
         self.initStyleOption(option)
@@ -301,12 +329,18 @@ class _DifficultyButton(QToolButton):
         font.setPixelSize(11)
         font.setBold(True)
         painter.setFont(font)
-        painter.setPen(QColor('#64788b' if self.isChecked() else '#9af0df'))
-        painter.drawText(QRect(1, 0, 20, self.height()), Qt.AlignmentFlag.AlignCenter, '普')
-        painter.setPen(QColor('#64788b'))
-        painter.drawText(QRect(19, 0, 10, self.height()), Qt.AlignmentFlag.AlignCenter, '/')
-        painter.setPen(QColor('#f0cd7b' if self.isChecked() else '#64788b'))
-        painter.drawText(QRect(27, 0, 20, self.height()), Qt.AlignmentFlag.AlignCenter, '英')
+        center = self.width() // 2
+        side = max(painter.fontMetrics().horizontalAdvance(label) for label in (self._left, self._right)) + 6
+        muted = '#899caf' if self.isEnabled() else '#52687a'
+        left_color = '#9af0df' if self.isEnabled() and not self.isChecked() else muted
+        right_color = self._checked_color if self.isEnabled() and self.isChecked() else muted
+        for label, left, width, color in (
+            (self._left, center - 5 - side, side, left_color),
+            ('/', center - 5, 10, muted),
+            (self._right, center + 5, side, right_color),
+        ):
+            painter.setPen(QColor(color))
+            painter.drawText(QRect(left, 0, width, self.height()), Qt.AlignmentFlag.AlignCenter, label)
 
 
 class ControlPanel(QWidget):
@@ -318,9 +352,11 @@ class ControlPanel(QWidget):
     pin_toggled = Signal(bool)
     grid_requested = Signal()
     tank_requested = Signal()
+    timeline_toggled = Signal(bool)
+    strategy_toggled = Signal(bool)
     attach_toggled = Signal()
     close_requested = Signal()
-    position_changed = Signal()
+    position_changed = Signal(QPoint)
     size_changed = Signal()
 
     # Retained for controller compatibility; none create visible controls.
@@ -338,7 +374,7 @@ class ControlPanel(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setStyleSheet(_STYLE)
-        self.setFixedSize(360, 178)
+        self.setFixedSize(_PANEL_SIZE)
         self._drag_offset: QPoint | None = None
         self._mode = "all"
         self._difficulty = 'normal'
@@ -362,6 +398,8 @@ class ControlPanel(QWidget):
         self._buff_counts = None
         self._instruction_text = ''
         self._command_lines = ['', '', '']
+        self._buff_instruction_text = ''
+        self._buff_command_lines = ['', '', '']
         self._final_statistics = None
         self._status_detail = ""
         self._hotkey_status = ""
@@ -369,7 +407,7 @@ class ControlPanel(QWidget):
         self._hide_shortcut = "Ctrl+Alt+H"
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setContentsMargins(_SIDE_MARGIN, 6, _SIDE_MARGIN, 6)
         layout.setSpacing(4)
 
         self._header = QWidget(self)
@@ -410,6 +448,24 @@ class ControlPanel(QWidget):
             header.addWidget(button)
         layout.addWidget(self._header)
 
+        policy_controls = QWidget()
+        policy_controls.setObjectName('policyControls')
+        policy_layout = QHBoxLayout(policy_controls)
+        policy_layout.setContentsMargins(0, 0, 0, 0)
+        policy_layout.setSpacing(4)
+        self.timeline_button = _ModeSwitch('timelineButton', '手动', '自动')
+        self.timeline_button.toggled.connect(self.timeline_toggled)
+        self.set_auto_timeline(True)
+        policy_layout.addWidget(self.timeline_button, 1)
+        self.strategy_button = _ModeSwitch('strategyButton', '正平', '简操')
+        self.strategy_button.toggled.connect(lambda simple: self.strategy_toggled.emit(not simple))
+        self.set_exact_preference(False)
+        policy_layout.addWidget(self.strategy_button, 1)
+        self.difficulty_button = _ModeSwitch('difficultyButton', '普通', '英雄', checked_color='#f0cd7b')
+        self.difficulty_button.toggled.connect(self._difficulty_clicked)
+        policy_layout.addWidget(self.difficulty_button, 1)
+        layout.addWidget(policy_controls)
+
         self._mode_group = QButtonGroup(self)
         self._mode_group.setExclusive(True)
         self.mode_buttons: dict[str, QToolButton] = {}
@@ -418,10 +474,10 @@ class ControlPanel(QWidget):
         segments.setFixedHeight(24)
         segment_layout = QHBoxLayout(segments)
         segment_layout.setContentsMargins(2, 2, 2, 2)
-        segment_layout.setSpacing(2)
+        segment_layout.setSpacing(4)
         for mode, text, name, tip in (
-            ("all", "扇＋圈", "modeAllButton", "扇形与圈联合修正"),
-            ("circle", "仅圈", "modeCircleButton", "仅使用圈修正"),
+            ("all", "扇+圈", "modeAllButton", "手动接管：扇形与圈联合修正"),
+            ("circle", "仅圈", "modeCircleButton", "手动接管：仅使用圈修正"),
         ):
             button = QToolButton()
             button.setObjectName(name)
@@ -435,33 +491,26 @@ class ControlPanel(QWidget):
             button.clicked.connect(lambda _checked=False, value=mode: self._mode_clicked(value))
             self.mode_buttons[mode] = button
             segment_layout.addWidget(button, 1)
-        segment_layout.addSpacing(3)
-        self.difficulty_button = _DifficultyButton()
-        self.difficulty_button.setObjectName('difficultyButton')
-        self.difficulty_button.setText('普/英')
-        self.difficulty_button.setCheckable(True)
-        self.difficulty_button.setFixedSize(48, 20)
-        self.difficulty_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.difficulty_button.toggled.connect(self._difficulty_clicked)
-        segment_layout.addWidget(self.difficulty_button)
+        divider = QWidget()
+        divider.setObjectName('actionDivider')
+        divider.setFixedSize(1, 14)
+        segment_layout.addWidget(divider, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.tank_button = self._compact_button('tankButton', 64)
+        self.tank_button.clicked.connect(lambda _checked=False: self.tank_requested.emit())
+        self.set_tank_key(None)
+        segment_layout.addWidget(self.tank_button)
         self.start_button = self._tool_button("analysisStartButton", "play")
+        self.start_button.setFixedWidth(40)
         self.start_button.setToolTip("开始识别")
         self.start_button.clicked.connect(lambda _checked=False: self.analysis_toggled.emit())
         segment_layout.addWidget(self.start_button)
         self.grid_button = self._tool_button("gridButton", "grid")
-        self.grid_button.setToolTip("自动定位团队格子")
+        self.grid_button.setIcon(_icon("grid", _TEAL))
+        self.grid_button.setFixedWidth(40)
+        self.grid_button.setToolTip("一键准备：定位团队格子并识别心法")
+        self.grid_button.setAccessibleName("定位团队格子并识别心法")
         self.grid_button.clicked.connect(lambda _checked=False: self.grid_requested.emit())
-        self.tank_button = QToolButton()
-        self.tank_button.setObjectName("tankButton")
-        self.tank_button.setFixedSize(20, 20)
-        self.tank_button.setText("T")
-        self.tank_button.setToolTip("点击格子指定T")
-        self.tank_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.tank_button.clicked.connect(lambda _checked=False: self.tank_requested.emit())
         segment_layout.addWidget(self.grid_button)
-        # Kept only for old controller/API callers; live strategy has no T step.
-        self.tank_button.setParent(self)
-        self.tank_button.hide()
         layout.addWidget(segments)
 
         self._buff_sources = {}
@@ -544,17 +593,44 @@ class ControlPanel(QWidget):
         layout.addWidget(self._summary_area)
         self._command_area = QWidget()
         self._command_area.setObjectName('commandArea')
-        self._command_area.setFixedHeight(66)
-        command_rows = QVBoxLayout(self._command_area)
+        self._command_area.setFixedHeight(3 * _COMMAND_ROW_HEIGHT)
+        command_layout = QHBoxLayout(self._command_area)
+        command_layout.setContentsMargins(0, 0, 0, 0)
+        command_layout.setSpacing(_COMMAND_GAP)
+        command_rows = QVBoxLayout()
         command_rows.setContentsMargins(0, 0, 0, 0)
         command_rows.setSpacing(0)
         self._instruction_labels = []
         for name in ('instructionLabel', 'guideInstructionLabel', 'circleInstructionLabel'):
-            label = _CommandLabel()
+            label = QLabel()
             label.setObjectName(name)
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setWordWrap(True)
+            label.setFixedHeight(_COMMAND_ROW_HEIGHT)
+            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             command_rows.addWidget(label)
             self._instruction_labels.append(label)
         self._instruction_label = self._instruction_labels[0]
+        command_layout.addLayout(command_rows, 1)
+        command_divider = QWidget()
+        command_divider.setObjectName('commandDivider')
+        command_divider.setFixedWidth(1)
+        command_layout.addWidget(command_divider)
+
+        buff_column = QWidget()
+        buff_column.setObjectName('buffPlanColumn')
+        buff_column.setFixedWidth(_BUFF_COLUMN_WIDTH)
+        buff_rows = QVBoxLayout(buff_column)
+        buff_rows.setContentsMargins(5, 0, 5, 0)
+        buff_rows.setSpacing(0)
+        self._buff_plan_labels = []
+        for name in ('fanBuffPlan', 'guideBuffPlan', 'circleBuffPlan'):
+            label = _BuffPlanLabel()
+            label.setObjectName(name)
+            buff_rows.addWidget(label)
+            self._buff_plan_labels.append(label)
+        command_layout.addWidget(buff_column)
+        self._instruction_width = _PANEL_SIZE.width() - 2 * (_SIDE_MARGIN + _COMMAND_GAP) - 1 - buff_column.width()
         layout.addWidget(self._command_area)
 
         # Existing capture/save callers may still address this attribute. It is
@@ -576,14 +652,19 @@ class ControlPanel(QWidget):
         self._refresh_tooltip()
 
     @staticmethod
-    def _tool_button(name: str, kind: str, checkable: bool = False) -> QToolButton:
+    def _compact_button(name: str, width: int, *, checkable: bool = False) -> QToolButton:
         button = QToolButton()
         button.setObjectName(name)
-        button.setFixedSize(20, 20)
-        button.setIconSize(QSize(16, 16))
-        button.setIcon(_icon(kind))
+        button.setFixedSize(width, 20)
         button.setCheckable(checkable)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
+        return button
+
+    @staticmethod
+    def _tool_button(name: str, kind: str, checkable: bool = False) -> QToolButton:
+        button = ControlPanel._compact_button(name, 20, checkable=checkable)
+        button.setIconSize(QSize(16, 16))
+        button.setIcon(_icon(kind))
         return button
 
     def _show_about(self) -> None:
@@ -637,7 +718,7 @@ class ControlPanel(QWidget):
         self._difficulty = difficulty if difficulty in SAFE_TOLERANCE else 'normal'
         self._check_silently(self.difficulty_button, self._difficulty == 'heroic')
         name = '英雄' if self._difficulty == 'heroic' else '普通'
-        self.difficulty_button.setToolTip(f'当前{name}，安全人数差 ≤ {SAFE_TOLERANCE[self._difficulty]}；点击切换普/英')
+        self.difficulty_button.setToolTip(f'当前{name}，安全人数差 ≤ {SAFE_TOLERANCE[self._difficulty]}。点击切换难度。')
         self.difficulty_button.setAccessibleName(f'难度切换，当前{name}')
         self.difficulty_button.update()
         self._render_summary()
@@ -648,8 +729,6 @@ class ControlPanel(QWidget):
 
     def set_analysis_active(self, active: bool) -> None:
         self._analysis_active = bool(active)
-        if active:self._drag_offset=None
-        self._header.setCursor(Qt.CursorShape.ArrowCursor if active else Qt.CursorShape.SizeAllCursor)
         self.start_button.setIcon(_icon("pause" if active else "play"))
         self._sync_selection_actions()
 
@@ -664,12 +743,35 @@ class ControlPanel(QWidget):
         self.tank_button.style().polish(self.tank_button)
         self._sync_selection_actions()
 
+    def set_tank_key(self, key: str | None) -> None:
+        self.tank_button.setProperty('assigned', key is not None)
+        label = '标T'
+        if key:
+            group, slot = key[1:].split('p')
+            label = f'T {group}-{slot}'
+        self.tank_button.setText(label)
+        self.tank_button.setToolTip('点击后在团队面板点选主T')
+        self.tank_button.style().unpolish(self.tank_button)
+        self.tank_button.style().polish(self.tank_button)
+
+    def set_auto_timeline(self, enabled: bool, phase: str = '') -> None:
+        self._check_silently(self.timeline_button, enabled)
+        self.timeline_button.setAccessibleName('当前自动阶段' if enabled else '当前手动阶段')
+        tip = '点击切到手动阶段。也可直接点扇+圈或仅圈接管。' if enabled else '点击开启自动阶段'
+        self.timeline_button.setToolTip(f'{phase}\n{tip}' if enabled and phase else tip)
+
+    def set_exact_preference(self, enabled: bool) -> None:
+        self._check_silently(self.strategy_button, not enabled)
+        self.strategy_button.setAccessibleName('当前正平模式' if enabled else '当前简操模式')
+        self.strategy_button.setToolTip('优先缩小双煞差距 · 点击切到简操' if enabled
+                                        else '安全结算内优先简化指挥 · 点击切到正平')
+
     def _sync_selection_actions(self) -> None:
         analyze_enabled = not self._grid_busy and not self._tank_selecting
         self.grid_button.setEnabled(analyze_enabled and not self._analysis_active)
         self.start_button.setEnabled(analyze_enabled and (self._grid_ready or self._analysis_active))
         self.start_button.setToolTip('停止识别' if self._analysis_active else
-                                    '开始识别' if self._grid_ready else '请先校准网格')
+                                    '开始识别' if self._grid_ready else '请先点击网格图标准备')
         self.tank_button.setEnabled(not self._grid_busy)
         self.difficulty_button.setEnabled(analyze_enabled)
         for button in self.mode_buttons.values():
@@ -694,7 +796,7 @@ class ControlPanel(QWidget):
         self.pin_button.setIcon(_icon("pin", _TEAL if pinned else "#8294a4"))
         self.pin_button.setToolTip("取消置顶" if pinned else "置顶")
 
-    def set_summary(self, text: str, error: bool = False) -> None:
+    def _reset_summary(self, text: str, error: bool) -> None:
         self._summary_text = str(text or "待识别").replace("\n", " ").strip()
         self._summary_error = bool(error)
         self._summary_statistics = None
@@ -702,12 +804,17 @@ class ControlPanel(QWidget):
         self._buff_counts = None
         self._instruction_text = ''
         self._command_lines = ['', '', '']
+        self._buff_instruction_text = ''
+        self._buff_command_lines = ['', '', '']
         self._final_statistics = None
+
+    def set_summary(self, text: str, error: bool = False) -> None:
+        self._reset_summary(text, error)
         self._render_summary()
         self._refresh_tooltip()
 
     def set_result(self, result) -> None:
-        self.set_summary(result.summary, result.status == 'no_solution')
+        self._reset_summary(result.summary, result.status in ('no_solution', 'tank_warning'))
         self._summary_reference = result.reference
         self._buff_counts = result.buff_counts
         self._instruction_text = result.instruction
@@ -715,6 +822,8 @@ class ControlPanel(QWidget):
         self._command_lines = (lines + ['', '', ''])[:3]
         if len(lines) > 3:
             self._command_lines[2] = '，'.join(lines[2:])
+        self._buff_instruction_text = result.buff_instruction
+        self._buff_command_lines = (self._buff_instruction_text.splitlines() + ['', '', ''])[:3]
         if result.final_red is not None and result.final_black is not None:
             self._final_statistics = (result.final_red, result.final_black)
         if result.current_red is not None and result.current_black is not None:
@@ -756,9 +865,24 @@ class ControlPanel(QWidget):
             )
         if hasattr(self, '_instruction_labels'):
             color = '#f29a9e' if self._summary_error else '#dce6ed'
-            for label, text in zip(self._instruction_labels, self._command_lines):
-                label.setStyleSheet(f'color: {color}; font-size: 11px; font-weight: 700;')
-                label.setText(self._instruction_html(text))
+            height = 0
+            for label, text, buff_label, buff_text in zip(
+                self._instruction_labels, self._command_lines, self._buff_plan_labels, self._buff_command_lines,
+            ):
+                size = 16 if label is self._instruction_label and text.startswith('换T') else 11
+                label.setStyleSheet(f'color: {color}; font-size: {size}px; font-weight: 700;')
+                text = _BUFF_TAG.sub(r'\1\2\3', text)
+                label.setText(text)
+                bounds = QRect(0, 0, self._instruction_width, 0)
+                text_height = label.fontMetrics().boundingRect(bounds, Qt.TextFlag.TextWordWrap.value, text).height()
+                row_height = max(_COMMAND_ROW_HEIGHT, text_height)
+                label.setFixedHeight(row_height)
+                buff_label.setFixedHeight(row_height)
+                buff_label.setText(self._buff_instruction_html(buff_text))
+                height += row_height
+            if self._command_area.minimumHeight() != height:
+                self._command_area.setFixedHeight(height)
+                self.setFixedSize(self.sizeHint())
             final = '<span style="color:#52616c; font-size:9px">处理后</span>'
             if self._final_statistics is None:
                 final += '<br><span style="color:#52616c">—</span>'
@@ -777,16 +901,15 @@ class ControlPanel(QWidget):
         signed = f'{difference:+d}' if difference else '0'
         return f'<b style="color:{color}">差 {signed}</b>&nbsp;{mark}'
 
-    def _instruction_html(self, text: str) -> str:
+    def _buff_instruction_html(self, text: str) -> str:
         def badge(match):
             color, stacks, count = match.groups()
             digit = int(stacks) if stacks.isdecimal() else '一二三四五'.index(stacks) + 1
             key = f"{'red' if color == '红' else 'black'}{digit}"
-            return (f'<img src="{self._buff_sources[key]}" width="16" height="16" style="vertical-align:middle" />'
+            return (f'<img src="{self._buff_sources[key]}" width="14" height="14" style="vertical-align:middle" />'
                     + (f' × {count[1:]}' if count else ''))
 
-        rich = escape(text).replace('\n', '<br>')
-        return re.sub(r'[\[{｛](红|黑)([1-5一二三四五])(×\d+)?[\]}｝]', badge, rich)
+        return _BUFF_TAG.sub(badge, escape(text))
 
     def set_capture_state(self, running: bool) -> None:
         self._running = bool(running)
@@ -874,11 +997,19 @@ class ControlPanel(QWidget):
         self._summary_label.setToolTip(tooltip)
         for label in self._instruction_labels:
             label.setToolTip(tooltip)
+        buff_tip = _BUFF_TAG.sub(r'\1\2\3', self._buff_instruction_text)
+        if buff_tip:
+            buff_tip += '\n圆内数字为煞气层数，×后是人数。引导和蹭圈按吃扇后的煞气显示。'
+        for label in self._buff_plan_labels:
+            label.setToolTip(buff_tip)
         self._result_label.setToolTip(tooltip)
         self._header.setToolTip("拖动提示面板\n" + tooltip)
 
     def sizeHint(self) -> QSize:
-        return QSize(360, 178)
+        if not hasattr(self, '_command_area'):
+            return QSize(_PANEL_SIZE)
+        extra = self._command_area.minimumHeight() - 3 * _COMMAND_ROW_HEIGHT
+        return QSize(_PANEL_SIZE.width(), _PANEL_SIZE.height() + extra)
 
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
@@ -887,9 +1018,6 @@ class ControlPanel(QWidget):
 
     def eventFilter(self, watched: Any, event: QEvent) -> bool:
         if watched is self._header and isinstance(event, QMouseEvent):
-            if self._analysis_active:
-                self._drag_offset=None
-                return True
             if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 self._drag_offset = event.globalPosition().toPoint() - self.pos()
                 return True
@@ -897,8 +1025,10 @@ class ControlPanel(QWidget):
                 if not event.buttons() & Qt.MouseButton.LeftButton:
                     self._drag_offset = None
                     return False
+                previous = self.pos()
                 self.move(event.globalPosition().toPoint() - self._drag_offset)
-                self.position_changed.emit()
+                if self.pos() != previous:
+                    self.position_changed.emit(previous)
                 return True
             if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                 self._drag_offset = None

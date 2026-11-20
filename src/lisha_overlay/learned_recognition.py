@@ -85,11 +85,12 @@ def _measure_top(images, side, edge_lookup):
     return max(0, min(votes, key=lambda y: (-votes[y], y))-1) if votes else 0
 
 
-def _proposals(image, side, edge_data):
+def _proposals(image, side, edge_data, first_icon=None):
     height, width = image.shape[:2]
     edge, lines = edge_data
-    found = [[max(0, x-1), max(0, y-1), side, side] for x, y, w, h in lines
-             if abs(w-side) <= 3 and y < height*.2]
+    found = [[*first_icon, side, side]] if first_icon is not None else []
+    found.extend([max(0, x-1), max(0, y-1), side, side] for x, y, w, h in lines
+                 if abs(w-side) <= 3 and y < height*.2)
     contours, _ = cv2.findContours(edge, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
@@ -115,6 +116,18 @@ def _body_colour_fraction(image,kind):
     hue,saturation,value=cv2.split(hsv)
     colour=((hue<20)|(hue>168)) if kind==1 else ((hue>=88)&(hue<=140))
     return float((colour&(saturation>65)&(value>65)).mean())
+
+
+def _same_visible_icon(reads):
+    first, second = reads
+    # A shared rectangle and artwork support make one missed detection less
+    # informative than two reads of the same color and exact layer count.
+    for read in reads:
+        if (read['confidence'] < .70 or read.get('body_colour_fraction', 0.) < .10
+                or not read.get('selected_bbox') or read.get('unverified_body')):
+            return False
+    return max(first['confidence'], second['confidence']) >= .80 and _iou(
+        first['selected_bbox'], second['selected_bbox']) >= .65
 
 
 class LearnedRecognizer:
@@ -193,29 +206,46 @@ class LearnedRecognizer:
             selected['scale_agreement']=[votes,len(variants)]
             selected['scale_variants']=[dict(state=r['state'],isolated=r['isolated'],side=r['icon_side'],
                                              confidence=r['confidence']) for r in variants]
-            selected['unverified_scale']=votes<len(variants)
+            state, isolated, isolation_confirmed = winner
+            missed_in_one_view = (
+                len(variants) == 3 and votes == 2 and state.startswith(('red_', 'black_'))
+                and isolation_confirmed and ('none', isolated, True) in signatures
+                and _same_visible_icon(choices)
+            )
+            selected['scale_missed_in_one_view'] = missed_in_one_view
+            selected['unverified_scale'] = votes < len(variants) and not missed_in_one_view
             combined.append(selected)
         return combined
 
-    def predict(self, images):
+    def predict(self, images, *, geometry_images=None, first_icons=None):
+        """Use complete panel evidence for geometry when reading a subset of its rows."""
         if not images:
             return []
         groups = defaultdict(list)
         group_key = lambda image: 0 if self.shared_team_scale else image.shape[:2]
-        edge_cache = {id(image): _edges(image) for image in images}
+        references = (geometry_images or images) if self.shared_team_scale else images
+        unique_images = {id(image): image for image in (*references, *images)}
+        edge_cache = {key: _edges(image) for key, image in unique_images.items()}
         lookup = lambda image: edge_cache[id(image)]
-        for i, image in enumerate(images):
-            groups[group_key(image)].append(i)
-        sizes = {key: (self.fixed_icon_side if getattr(self,'fixed_icon_side',None) else _measure_side([images[i] for i in ids], lookup)) for key, ids in groups.items()}
+        for image in references:
+            groups[group_key(image)].append(image)
+        sizes = {key: (self.fixed_icon_side if getattr(self,'fixed_icon_side',None) else _measure_side(group, lookup))
+                 for key, group in groups.items()}
+        local_icons = first_icons or {}
+        row_sides = [local_icons[i][2] if i in local_icons else sizes[group_key(image)]
+                     for i, image in enumerate(images)]
         pixels, fonts, counters, owners, boxes = [], [], [], [], []
         geometry = self.configuration['proposal_geometry']
         for view,offset in enumerate(self.scale_offsets):
-            tops={key:_measure_top([images[i] for i in ids],sizes[key]+offset,lookup) for key,ids in groups.items()}
+            tops={key:_measure_top(group,sizes[key]+offset,lookup) for key,group in groups.items()}
             for owner, image in enumerate(images):
                 key = group_key(image)
-                for box in _proposals(image, sizes[key]+offset, lookup(image)):
-                    if abs(box[1]-tops[key]) > geometry['maximum_top_deviation']:
-                        box = [box[0], tops[key], box[2], box[3]]
+                icon = local_icons.get(owner)
+                first_icon = icon[:2] if icon is not None else None
+                top = icon[1] if icon is not None else tops[key]
+                for box in _proposals(image, row_sides[owner]+offset, lookup(image), first_icon):
+                    if abs(box[1]-top) > geometry['maximum_top_deviation']:
+                        box = [box[0], top, box[2], box[3]]
                     x, y, w, h = box
                     core = image[max(0, y+3):min(image.shape[0], y+int(h*.8)),
                                  max(0, x+3):min(image.shape[1], x+int(w*.85)), :3]
@@ -231,7 +261,7 @@ class LearnedRecognizer:
                     boxes.append(box)
         rows = [{'state': 'none', 'isolated': False, 'confidence': 0., 'candidates': [],
                  'isolation_confirmed': True, 'unverified_isolation': False,
-                 'icon_side': sizes[group_key(image)]+offset} for offset in self.scale_offsets for image in images]
+                 'icon_side': side+offset} for offset in self.scale_offsets for side in row_sides]
         if not pixels:
             self.last_inference={'candidates':0,'evaluated':0,'cache_hits':0,'calls':0}
             return self._combine_scales(rows,len(images))

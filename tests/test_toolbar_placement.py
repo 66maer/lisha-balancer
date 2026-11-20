@@ -27,12 +27,15 @@ def test_full_display_scan_reports_no_external_placement():
 def test_growing_instruction_row_stays_attached_and_outside_game_data(qt_app):
     from types import SimpleNamespace
     from unittest.mock import Mock
+    from lisha_overlay.analysis import AnalysisResult
     from lisha_overlay.app import OverlayController
     from lisha_overlay.panel import ControlPanel
     panel=ControlPanel()
-    scan=QRect(100,200,360,480)
-    panel.move(100,88)
-    panel.setFixedHeight(126)
+    scan=QRect(100,300,360,480)
+    panel.move(100,scan.top()-4-panel.height())
+    assert not panel.geometry().intersects(scan)
+    line = '1队唐门、2队奶花、3队冰心、4队无相楼、5队气纯吃扇'
+    panel.set_result(AnalysisResult('方案', instruction=f'{line}，{line}'))
     assert panel.geometry().intersects(scan)
     controller=SimpleNamespace(panel=panel,scan=SimpleNamespace(geometry=lambda:scan,
         screen=lambda:SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))),

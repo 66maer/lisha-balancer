@@ -805,7 +805,7 @@ def team_variants(roster, board, *, tolerance=2):
     return variants
 
 
-def solve_steps(roster, mode, catalogue, *, tolerance=2):
+def solve_steps(roster, mode, catalogue, *, tolerance=2, prefer_exact=False):
     started = perf_counter()
     if mode not in ("all", "circle"):
         raise ValueError("仅支持扇＋圈、仅圈。")
@@ -830,7 +830,9 @@ def solve_steps(roster, mode, catalogue, *, tolerance=2):
         actions = [int(i in neutral_guides) for i in range(25)]
         candidates = [dict(actions=actions, guides=neutral_guides, extras=[], source="balanced")]
     else:
-        candidates = list(squad_candidates(roster, mode, tolerance))
+        candidates = []
+    if not candidates or (prefer_exact and initial_difference != 0):
+        candidates.extend(squad_candidates(roster, mode, tolerance))
         candidates.append(fallback)
     best = None
     checked = 0
@@ -843,6 +845,8 @@ def solve_steps(roster, mode, catalogue, *, tolerance=2):
             continue
         checked += 1
         score = participant_score(roster, board)
+        if prefer_exact:
+            score = (abs(board['final']['difference']), *score)
         if best is None or score < best[0]:
             best = (score, board)
     if best is None:

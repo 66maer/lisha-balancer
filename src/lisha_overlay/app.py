@@ -19,14 +19,14 @@ from PySide6.QtCore import (
     QAbstractNativeEventFilter, QObject, QPoint, QRect, QThread, QTimer, Qt,
     Signal, Slot, QMetaObject, QSize, QCoreApplication, QEvent, QStandardPaths,
 )
-from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QActionGroup, QColor, QFont, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMenu, QMessageBox, QSystemTrayIcon
 
 from .capture import CaptureWorker
 from . import __version__
-from .analysis import AnalysisResult, demo_result
-from .live_strategy import evaluate_current as evaluate
+from .analysis import ACTIONABLE_STATUSES, AnalysisResult, demo_result
+from .live_strategy import evaluate_simple_commands as evaluate, evaluate_exact_commands as evaluate_exact
 from .overlay import ScanOverlay, bounded_rect
 from .panel import ControlPanel, PreviewWindow
 from .team_layout import TeamLayout
@@ -194,8 +194,17 @@ class OverlayController(QObject):
             self.analysis_mode = "all"
         self.test_enabled = False
         self.tank_key = None
-        self.snapshot_stage = 'after_tank'
+        self.snapshot_stage = ('after_tank' if self.settings.get('manual_fan_stage') == 'after_tank'
+                               else 'before_tank')
+        # Older profiles saved the former off default as if it were a choice.
+        self.auto_timeline = self.settings.get('auto_stage_enabled', True) is not False
+        self._timeline_session = 0
         self.manual_overrides = {}
+        self._xinfa_roster = {}
+        self._xinfa_request = None
+        self._xinfa_serial = 0
+        self._xinfa_owns_capture = False
+        self._xinfa_last_sample = 0.
         self.isolation_confirmed = False
         self._processing_busy = False
         self._recognition_previous = None
@@ -287,8 +296,12 @@ class OverlayController(QObject):
         self.panel.preview_requested.connect(self.open_preview)
         self.panel.save_requested.connect(self.save_frame)
         self.panel.settings_requested.connect(self.open_preferences)
-        self.panel.grid_requested.connect(self.locate_grid)
+        self.panel.grid_requested.connect(lambda: self.locate_grid(prepare=True))
         self.panel.tank_requested.connect(self.select_tank)
+        self.panel.timeline_toggled.connect(self.set_auto_timeline)
+        self.panel.set_auto_timeline(self.auto_timeline)
+        self.panel.strategy_toggled.connect(self.set_exact_preference)
+        self.panel.set_exact_preference(self.prefer_exact)
         self.panel.close_requested.connect(self.quit)
         self.panel.mode_changed.connect(self.select_analysis_mode)
         self.panel.difficulty_changed.connect(self.set_difficulty)
@@ -419,6 +432,9 @@ class OverlayController(QObject):
             self._cancel_grid_request()
             self._cancel_tank_selection()
             if self.scan.geometry()!=getattr(self,'_calibrated_geometry',None):
+                if getattr(self, '_xinfa_request', None) is not None:
+                    self._finish_xinfa_scan()
+                    self.panel.set_summary("选区已变化 · 请重新准备")
                 self.grid_ready=False
                 self.panel.set_grid_ready(False)
         self._dock_panel()
@@ -427,7 +443,7 @@ class OverlayController(QObject):
         self._region_timer.start()
         self._save_timer.start()
 
-    def _panel_moved(self):
+    def _panel_moved(self, previous=None):
         if self._placing_panel:
             return
         # Dragging the panel is also a direct way to detach it.
@@ -442,7 +458,7 @@ class OverlayController(QObject):
             self.panel.move(bounded_rect(self.panel.geometry(), screen.availableGeometry(),
                                         (self.panel.width(), self.panel.height())).topLeft())
             self._placing_panel = False
-        self._avoid_panel_overlap()
+        self._avoid_panel_overlap(previous)
         self._save_timer.start()
 
     def _panel_resized(self):
@@ -454,7 +470,7 @@ class OverlayController(QObject):
             self._avoid_panel_overlap()
         self._save_timer.start()
 
-    def _avoid_panel_overlap(self):
+    def _avoid_panel_overlap(self, previous=None):
         if self._placing_panel or not self.panel.geometry().intersects(self.scan.geometry()):
             return
         screen = self.app.screenAt(self.panel.geometry().center()) or self.scan.screen()
@@ -464,6 +480,8 @@ class OverlayController(QObject):
             self._placing_panel = True
             self.panel.move(placement.topLeft())
             self._placing_panel = False
+        elif previous is not None:
+            self.panel.move(previous)
         else:
             self._placing_panel = True
             area = screen.availableGeometry()
@@ -480,6 +498,7 @@ class OverlayController(QObject):
         try:
             region = native_client_region(self.scan, self.scan.INSET)
         except (OSError, ValueError, RuntimeError) as error:
+            self._xinfa_roster = {}
             self._region = {}
             self._frame = QImage()
             self._metadata = {}
@@ -500,6 +519,9 @@ class OverlayController(QObject):
         self._region = region
         self.panel.set_capture_info(region, self.scan.screen().name())
         if changed:
+            self._xinfa_roster = {}
+            if getattr(self, '_xinfa_request', None) is not None:
+                self._finish_xinfa_scan()
             if not getattr(self,'_auto_applying',False):
                 self.grid_ready=False
                 self.panel.set_grid_ready(False)
@@ -539,7 +561,7 @@ class OverlayController(QObject):
         self._cancel_grid_request()
         self._cancel_tank_selection()
         self._restore_remote_windows()
-        was_running = self.running
+        was_running = self.running and not self._xinfa_owns_capture
         self.stop_requested.emit()
         self._set_running(False)
         self._invalidate_analysis()
@@ -557,7 +579,7 @@ class OverlayController(QObject):
         self._restore_remote_windows()
         self._remote_capture_kind = kind
         marks = self.scan.markers
-        windows = [marks] if marks.displayed_annotations() or marks.calibration_enabled else []
+        windows = [marks] if marks.displayed_annotations() or marks.calibration_enabled or marks.tank_key else []
         self._remote_hidden = [window for window in windows if window.isVisible()]
         for window in self._remote_hidden:
             window.hide()
@@ -567,6 +589,8 @@ class OverlayController(QObject):
                 self._restore_remote_windows()
                 if kind[0] == "grid":
                     self._cancel_grid_request()
+                elif self._xinfa_request is not None:
+                    self._finish_xinfa_scan()
                 self._analysis_pending = False
                 self.scan.set_annotations([])
                 self._last_result = None
@@ -615,10 +639,11 @@ class OverlayController(QObject):
             self._invalidate_analysis()
             self.scan.set_annotations([])
             self._last_result = None
-            self._set_running(False)
-            self.stop_requested.emit()
-            if getattr(self, "remote_compatible", False):
-                self._restore_remote_windows()
+            if self.running:
+                self._set_running(False)
+                self.stop_requested.emit()
+                if getattr(self, "remote_compatible", False):
+                    self._restore_remote_windows()
             self.panel.set_status("采集已暂停，保留最近一帧。")
             return
         if not self._update_region():
@@ -628,8 +653,11 @@ class OverlayController(QObject):
             return
         if not self.locked:
             self.set_locked(True)
-        self._set_running(True)
         self.panel.set_status("正在采集框内画面；打开预览可检查选区。")
+        self._start_capture()
+
+    def _start_capture(self):
+        self._set_running(True)
         if getattr(self, "remote_compatible", False):
             self._request_remote_frame()
         else:
@@ -660,7 +688,8 @@ class OverlayController(QObject):
         self.panel.set_frame_info(metadata)
         if self._dialog is not None and hasattr(self._dialog, "update_frame"):
             self._dialog.update_frame(image, metadata)
-        if self._analysis_pending and not self.test_enabled and not self._processing_busy:
+        if (self._analysis_pending and not self.test_enabled and not self._processing_busy and self._dialog is None
+                and not self.tank_picker.is_selecting):
             self._analysis_pending = False
             self._submit_analysis(image, metadata)
         if self.preview.isVisible():
@@ -765,12 +794,11 @@ class OverlayController(QObject):
             picker.cancel_selection()
 
     def _refresh_tank_button(self):
-        key = self.tank_key
-        text = f"T：{key[1:-2]} 队 · {key[-1]}（点击重选）" if key else "T 可选：点击格子指定；未选也可参考分析"
-        self.panel.tank_button.setToolTip(text)
+        self.panel.set_tank_key(self.tank_key)
+        self.scan.markers.set_tank_key(self.tank_key)
 
     def select_tank(self):
-        if self._grid_busy or self._dialog is not None:
+        if self._grid_busy or getattr(self, '_xinfa_request', None) is not None or self._dialog is not None:
             return
         if getattr(self, "remote_compatible", False):
             self._restore_remote_windows()
@@ -782,7 +810,7 @@ class OverlayController(QObject):
             return
         if self.test_enabled:
             self.set_test_enabled(False)
-        self._invalidate_analysis()
+        self._invalidate_analysis(preserve_pending=getattr(self, '_continuous_analysis', False))
         self._last_result = None
         self.scan.set_annotations([])
         self.scan.set_guides_visible(False)
@@ -802,7 +830,7 @@ class OverlayController(QObject):
             return
         self._cancel_tank_selection()
         self.tank_key = key
-        self._invalidate_analysis()
+        self._invalidate_analysis(preserve_pending=getattr(self, '_continuous_analysis', False))
         self.manual_overrides.clear()
         self.isolation_confirmed = False
         self._players = []
@@ -821,7 +849,7 @@ class OverlayController(QObject):
         self._cancel_tank_selection()
         self._pick_after_grid = False
         self.tank_key = None
-        self._invalidate_analysis()
+        self._invalidate_analysis(preserve_pending=self._continuous_analysis)
         self._last_result = None
         self._players = []
         self.scan.set_annotations([])
@@ -833,11 +861,11 @@ class OverlayController(QObject):
         if self._dialog is None:
             self.scan.set_guides_visible(False)
 
-    def locate_grid(self, *, pick_tank=False, analyze_after=None):
+    def locate_grid(self, *, pick_tank=False, analyze_after=None, prepare=False):
         if getattr(self,'_continuous_analysis',False):
             self.panel.set_status('请先停止识别')
             return
-        if self._grid_busy or self._dialog is not None:
+        if self._grid_busy or getattr(self, '_xinfa_request', None) is not None or self._dialog is not None:
             return
         if self.preview.isVisible() and self.preview.geometry().intersects(self.scan.geometry()):
             self.panel.set_status('请先将预览移出扫描框，或关闭预览后校准。', True)
@@ -846,6 +874,8 @@ class OverlayController(QObject):
         if self.test_enabled:
             self.set_test_enabled(False)
         self._invalidate_analysis()
+        self._xinfa_roster = {}
+        self._xinfa_request = None
         self.manual_overrides.clear()
         self.isolation_confirmed = False
         self._players = []
@@ -878,6 +908,7 @@ class OverlayController(QObject):
             "scan_geometry":_rect_list(self.scan.geometry()),"search_scope":"selection",
             "screen_name": screen.name(), "screen_geometry": _rect_list(screen.geometry()),
             "dpr": screen.devicePixelRatio(),
+            "prepare": prepare,
         }
         self._record_grid('locating',config)
         if getattr(self, "remote_compatible", False):
@@ -942,7 +973,9 @@ class OverlayController(QObject):
         self.scan.set_guides_visible(True)
         self._grid_feedback_timer.start()
         self.persist()
-        if self._pick_after_grid:
+        if metadata.get('prepare'):
+            self._start_xinfa_scan()
+        elif self._pick_after_grid:
             self._pick_after_grid = False
             self.select_tank()
         elif getattr(self, "_analyze_after_grid", None):
@@ -985,14 +1018,48 @@ class OverlayController(QObject):
     def select_analysis_mode(self, mode: str):
         if mode not in ("all", "circle"):
             return
+        was_auto = self.auto_timeline
+        if was_auto:
+            last = getattr(self, '_analysis_metadata', {})
+            if mode == 'all' and last.get('generation') == self._generation:
+                if last.get('timeline_phase') == 'before_tank':
+                    self.snapshot_stage = 'before_tank'
+                elif last.get('timeline_phase') in (
+                    'after_tank', 'fan_cast', 'after_fan', 'circle_1', 'circle_2', 'circle_3', 'settling',
+                ):
+                    self.snapshot_stage = 'after_tank'
+            self.set_auto_timeline(False, refresh=False)
         if self._continuous_analysis or self.test_enabled:
-            if mode != self.analysis_mode:
+            if was_auto or mode != self.analysis_mode:
                 self.analyze_mode(mode)
         else:
             self.analysis_mode = mode
             self.panel.set_mode(mode)
             self.scan.set_analysis_mode(mode)
             self._save_timer.start()
+
+    def set_auto_timeline(self, enabled: bool, *, refresh: bool = True):
+        if not enabled and refresh and self.auto_timeline and self._continuous_analysis:
+            last = getattr(self, '_analysis_metadata', {})
+            if last.get('generation') == self._generation and last.get('effective_mode') in ('all', 'circle'):
+                self.select_analysis_mode(last['effective_mode'])
+                return
+        self.auto_timeline = bool(enabled)
+        self._timeline_session += 1
+        self.panel.set_auto_timeline(self.auto_timeline)
+        self._save_timer.start()
+        if refresh and self._continuous_analysis:
+            self.analyze_mode(self.analysis_mode)
+
+    def set_manual_fan_stage(self, stage):
+        self.snapshot_stage = stage
+        self.set_auto_timeline(False, refresh=False)
+        self.analysis_mode = 'all'
+        if self._continuous_analysis or self.test_enabled:
+            self.analyze_mode('all')
+        else:
+            self.panel.set_mode('all')
+            self.scan.set_analysis_mode('all')
 
     def toggle_analysis(self):
         if self._continuous_analysis:
@@ -1021,6 +1088,8 @@ class OverlayController(QObject):
             mode = "all"
         if getattr(self, "_grid_busy", False) or (getattr(self, "tank_picker", None)
                                                   and self.tank_picker.is_selecting):
+            return
+        if getattr(self, '_xinfa_request', None) is not None and not self._continuous_analysis:
             return
         if not getattr(self, "grid_ready", True) and not self.test_enabled:
             self.analysis_mode = mode
@@ -1062,9 +1131,13 @@ class OverlayController(QObject):
                 and self.running and not self._quitting):
             self._request_remote_frame()
             return
-        if (not self._continuous_analysis or self._quitting or self.test_enabled
+        if (self._quitting or self.test_enabled
                 or not self.running or self._processing_busy or self._analysis_pending
                 or self._dialog is not None or self._grid_busy or self.tank_picker.is_selecting):
+            return
+        if not self._continuous_analysis and (
+            self._xinfa_request is None or time.monotonic() - self._xinfa_last_sample < .45
+        ):
             return
         self._analysis_pending = True
         if self.remote_compatible:
@@ -1072,6 +1145,8 @@ class OverlayController(QObject):
 
     def _invalidate_analysis(self, *, preserve_pending=False):
         self._generation += 1
+        if not preserve_pending and getattr(self, '_xinfa_request', None) is not None:
+            self._finish_xinfa_scan()
         self._recognition_previous = None
         self._analysis_attempts = 0
         self._analysis_pending = bool(preserve_pending)
@@ -1081,6 +1156,9 @@ class OverlayController(QObject):
         self._confirmed_team_result = None
         if not preserve_pending and getattr(self, "_continuous_analysis", False):
             self._continuous_analysis = False
+            self._timeline_session = getattr(self, '_timeline_session', 0) + 1
+            if getattr(self, 'auto_timeline', False):
+                self.panel.set_auto_timeline(True)
             self.panel.set_analysis_active(False)
             self.set_locked(False)
 
@@ -1101,12 +1179,21 @@ class OverlayController(QObject):
     def _submit_analysis(self, image, metadata):
         self._processing_busy = True
         self._analysis_frame = image.copy()
+        request = getattr(self, '_xinfa_request', None)
+        xinfa_only = request is not None and not getattr(self, '_continuous_analysis', False)
+        if xinfa_only:
+            self._xinfa_last_sample = time.monotonic()
         config = {"generation": self._generation, "layout": self.team_layout.to_dict(),
                   "tank_key": self.tank_key, "snapshot_stage": self.snapshot_stage,
                   "isolation_confirmed": self.isolation_confirmed,
                   "mode": self.analysis_mode,
+                  'auto_timeline': getattr(self, 'auto_timeline', False),
+                  'timeline_session': getattr(self, '_timeline_session', 0),
                   'prefer_exact': getattr(self, 'prefer_exact', False),
                   'difficulty': getattr(self, 'difficulty', 'normal'),
+                  'xinfa_request': request,
+                  'xinfa_only': xinfa_only,
+                  'xinfa_roster': dict(getattr(self, '_xinfa_roster', {})),
                   "overrides": {key: dict(value) for key, value in self.manual_overrides.items()}}
         self.analysis_requested.emit(image, dict(metadata), config)
 
@@ -1118,11 +1205,36 @@ class OverlayController(QObject):
                     and getattr(self, "remote_compatible", False)):
                 self._request_remote_frame()
             return
+        request = getattr(self, '_xinfa_request', None)
+        if request is not None and request == metadata.get('xinfa_request'):
+            region = dict(self._region)
+            frame = self._analysis_frame
+            QTimer.singleShot(0, lambda: self._apply_xinfa_scan(request, region, frame, metadata))
+        if metadata.get('xinfa_only'):
+            return
         self._players = list(players)
         self._analysis_metadata = metadata
         self._analysis_attempts += 1
+        if 'timeline_phase' in metadata:
+            mode = metadata['effective_mode']
+            self.panel.set_auto_timeline(True, metadata['timeline_label'])
+            self.panel.set_mode(mode)
+            self.scan.set_analysis_mode(mode or self.analysis_mode)
+        if result.status == 'timeline_wait':
+            self._analysis_pending = False
+            self._team_confirmation.reset()
+            self._confirmed_team_result = None
+            self._recognition_previous = None
+            self._stable_frames = 0
+            self.apply_analysis(result)
+            self.panel.set_status(result.details)
+            diagnosis = ('timeline_wait', metadata.get('timeline_phase'))
+            if diagnosis != self._last_diagnostic_signature:
+                self._record_analysis(result, players, metadata)
+                self._last_diagnostic_signature = diagnosis
+            return
         signature = tuple((p.player_key, p.color if p.alive else 'none', p.stacks if p.alive else 0,
-                           p.alive, p.isolated if p.alive else False, p.is_tank) for p in players)
+                           p.alive, p.isolated if p.alive else False, p.xinfa, p.is_tank) for p in players)
         if getattr(self, '_continuous_analysis', False) and metadata.get('vision_backend') == 'learned':
             self._complete_learned_snapshot(result, players, metadata, signature)
             return
@@ -1130,7 +1242,7 @@ class OverlayController(QObject):
             # Whole snapshots must agree. Do not stitch per-player votes from
             # different moments into a team state that never actually existed.
             signature = (signature, tuple(metadata.get("isolation_unconfirmed_keys", [])))
-            valid = result.status in ("solved", "no_solution")
+            valid = result.status in ACTIONABLE_STATUSES
             same = valid and signature == self._recognition_previous
             self._stable_frames = self._stable_frames + 1 if same else (1 if valid else 0)
             self._recognition_previous = signature if valid else None
@@ -1141,7 +1253,6 @@ class OverlayController(QObject):
                     LOG.info("First confirmed result mode=%s elapsed_ms=%.1f", self.analysis_mode, self._first_result_ms)
                 self.apply_analysis(result)
                 self.panel.set_status(result.details)
-                self.panel.set_summary(result.summary, result.status == "no_solution")
                 self.isolation_confirmed = False
                 self.manual_overrides.clear()
             else:
@@ -1154,7 +1265,7 @@ class OverlayController(QObject):
                 self._record_analysis(result, players, metadata)
                 self._last_diagnostic_signature = diagnosis
             return
-        if result.status in ("solved", "no_solution"):
+        if result.status in ACTIONABLE_STATUSES:
             if signature != self._recognition_previous:
                 self._recognition_previous = signature
                 if self._analysis_attempts < 4:
@@ -1170,7 +1281,6 @@ class OverlayController(QObject):
             self._analysis_pending = True
         self.apply_analysis(result)
         self.panel.set_status(result.details)
-        self.panel.set_summary(result.summary, result.status == "no_solution")
         if not self._analysis_pending:
             self._record_analysis(result, players, metadata)
             self.isolation_confirmed = False
@@ -1183,10 +1293,15 @@ class OverlayController(QObject):
             self._team_confirmation = SnapshotConfirmation()
             self._confirmed_team_result = None
         diagnostics = metadata.get('diagnostics', {})
-        trustworthy = result.status in ('solved', 'no_solution') and all(
-            diagnostics.get(p.player_key, {}).get('localized', False)
-            and (not p.alive or (p.color in ('none','red','black') and isinstance(p.isolated, bool)
-                 and (p.color=='none' or p.stacks in (1,2,3,4)))) for p in players)
+        if result.status == 'tank_warning':
+            tanks = [p for p in players if p.is_tank]
+            trustworthy = len(tanks) == 1 and diagnostics.get(tanks[0].player_key, {}).get('localized', False)
+            signature = tuple(item for item in signature if item[-1])
+        else:
+            trustworthy = result.status in ACTIONABLE_STATUSES and all(
+                diagnostics.get(p.player_key, {}).get('localized', False)
+                and (not p.alive or (p.color in ('none','red','black') and isinstance(p.isolated, bool)
+                     and (p.color=='none' or p.stacks in (1,2,3,4)))) for p in players)
         seconds = metadata.get('captured_at')
         if not isinstance(seconds, (int, float)) or isinstance(seconds, bool):
             seconds = time.perf_counter()
@@ -1199,7 +1314,7 @@ class OverlayController(QObject):
         status, accepted = self._team_confirmation.update(signature, seconds, trustworthy=trustworthy)
         metadata['confirmation_status'] = status
         metadata['observed_players'] = [dict(key=p.player_key, color=p.color, stacks=p.stacks,
-            alive=p.alive, isolated=p.isolated, is_tank=p.is_tank) for p in players]
+            alive=p.alive, isolated=p.isolated, is_tank=p.is_tank, xinfa=p.xinfa) for p in players]
         self._analysis_pending = False
         self._recognition_previous = signature if trustworthy else None
         self._stable_frames = 2 if accepted is not None else self._team_confirmation.count
@@ -1227,7 +1342,8 @@ class OverlayController(QObject):
         metadata['reference'] = published.reference if trustworthy else False
         metadata['published_kind'] = ('reference' if published.reference else 'confirmed') if trustworthy else 'invalid'
         metadata['confirmation_hold_ms'] = 0.
-        diagnosis = (signature, result.status, status, metadata['reference'], tuple(metadata.get('reference_keys',[])))
+        diagnosis = (signature, result.status, status, metadata['reference'], metadata.get('timeline_phase'),
+                     tuple(metadata.get('reference_keys',[])))
         if diagnosis != getattr(self, '_last_diagnostic_signature', None):
             self._record_analysis(published, players, metadata)
             self._last_diagnostic_signature = diagnosis
@@ -1241,13 +1357,15 @@ class OverlayController(QObject):
         state = {
             "version": __version__,
             "remote_compatible": getattr(self, "remote_compatible", False),
-            "captured_at": metadata.get("captured_at"), "mode": self.analysis_mode,
+            "captured_at": metadata.get("captured_at"), "mode": metadata.get('effective_mode', self.analysis_mode),
+            'timeline_phase': metadata.get('timeline_phase'), 'timeline_started_at': metadata.get('timeline_started_at'),
             'difficulty': getattr(self, 'difficulty', 'normal'),
             "status": result.status, "summary": result.summary, "region": dict(self._region),
             "current_red": result.current_red, "current_black": result.current_black,
             "current_difference": (result.current_red-result.current_black
                 if result.current_red is not None and result.current_black is not None else None),
             "instruction": result.instruction,
+            "buff_instruction": result.buff_instruction,
             "balanced": result.balanced,
             "continuous": getattr(self, "_continuous_analysis", False),
             "first_result_ms": getattr(self, "_first_result_ms", None),
@@ -1274,10 +1392,11 @@ class OverlayController(QObject):
             'hidden_layers': metadata.get('hidden_layers', []),
             "guide_keys": list(result.plan.centers) if result.plan else [],
             "guide_convention": '1定点，2单走，3在1旁；仅跟1或1后3' if result.plan and result.plan.command_style else None,
-            "tank_key": self.tank_key, "snapshot_stage": self.snapshot_stage,
+            "tank_key": self.tank_key, "snapshot_stage": metadata.get('snapshot_stage', self.snapshot_stage),
             "difference": result.difference, "final_red": result.final_red, "final_black": result.final_black,
             "players": [{"key": p.player_key, "color": p.color, "stacks": p.stacks,
-                         "alive": p.alive, "isolated": p.isolated, "is_tank": p.is_tank} for p in players],
+                         "alive": p.alive, "isolated": p.isolated, "is_tank": p.is_tank, 'xinfa': p.xinfa}
+                        for p in players],
             "diagnostics": metadata.get("diagnostics", {}),
             "warnings": metadata.get("warnings", []),
             "reference_without_tank": metadata.get("reference_without_tank", False),
@@ -1351,6 +1470,10 @@ class OverlayController(QObject):
                 self._request_remote_frame()
             return
         LOG.error("Analysis: %s", message)
+        if metadata.get('xinfa_only'):
+            self._finish_xinfa_scan()
+            self.panel.set_summary('心法识别失败 · 可重试', True)
+            return
         try:
             (settings_path().parent/'latest-failure.json').write_text(json.dumps(
                 dict(error=message, metadata=metadata, recorded_at=time.time()), ensure_ascii=False, default=str, indent=2), encoding='utf8')
@@ -1383,8 +1506,9 @@ class OverlayController(QObject):
         """Recognition may publish validated grid identities through this boundary."""
         self._players = list(players)
         if not self.test_enabled:
-            self.apply_analysis(evaluate(self._players, self.analysis_mode, snapshot_stage=self.snapshot_stage,
-                                         difficulty=getattr(self, 'difficulty', 'normal')))
+            evaluator = evaluate_exact if self.prefer_exact else evaluate
+            self.apply_analysis(evaluator(self._players, self.analysis_mode, snapshot_stage=self.snapshot_stage,
+                                          difficulty=getattr(self, 'difficulty', 'normal')))
 
     def _refresh_summary(self):
         self.panel.set_grid_ready(getattr(self,'grid_ready',False))
@@ -1411,14 +1535,121 @@ class OverlayController(QObject):
         menu.addAction("预览", self.open_preview)
         menu.addAction("保存截图", self.save_frame).setEnabled(not self._frame.isNull())
         menu.addAction("外观 / 尺寸", self.open_preferences)
-        exact = menu.addAction('正平优先')
-        exact.setCheckable(True)
-        exact.setChecked(self.prefer_exact)
-        exact.triggered.connect(self.set_exact_preference)
+        roster_count = len(self._xinfa_roster)
+        read_label = '重新识别心法' if roster_count else '识别并确认心法'
+        menu.addAction(read_label, self._start_xinfa_scan).setEnabled(
+            self.grid_ready and self._xinfa_request is None and not self._grid_busy)
+        menu.addAction(f'核对心法名单（{roster_count}人）',
+                       lambda: self._review_xinfa(dict(self._region))).setEnabled(
+                           self.grid_ready and self._xinfa_request is None and not self._grid_busy)
+        menu.addAction('取消主T', self.clear_tank).setEnabled(self.tank_key is not None)
+        stages = menu.addMenu('手动扇形阶段')
+        stage_group = QActionGroup(stages)
+        for label, stage in (('一式前 · 给主T加三层赤', 'before_tank'), ('一式后 · 按实况', 'after_tank')):
+            action = stages.addAction(label)
+            stage_group.addAction(action)
+            action.setCheckable(True)
+            action.setChecked(not self.auto_timeline and self.snapshot_stage == stage)
+            action.triggered.connect(lambda _checked=False, value=stage: self.set_manual_fan_stage(value))
+        preferences = menu.addMenu('指挥模式')
+        policy_group = QActionGroup(preferences)
+        for label, exact in (('简操模式', False), ('正平模式', True)):
+            action = preferences.addAction(label)
+            policy_group.addAction(action)
+            action.setCheckable(True)
+            action.setChecked(self.prefer_exact == exact)
+            action.triggered.connect(lambda _checked=False, value=exact: self.set_exact_preference(value))
         menu.addAction('导出调试包', self.export_debug_bundle)
         menu.addAction("重置位置", self.reset_layout)
         menu.exec(self.panel.mapToGlobal(point))
         menu.deleteLater()
+
+    def _start_xinfa_scan(self):
+        if (not self.grid_ready or self._grid_busy or self._xinfa_request is not None
+                or self._dialog is not None or self.tank_picker.is_selecting):
+            return
+        if not self._update_region() or not self.grid_ready:
+            return
+        if self.preview.isVisible() and self.preview.geometry().intersects(self.scan.geometry()):
+            self.panel.set_status('请先移开覆盖团框的预览。', True)
+            return
+        if self.test_enabled:
+            self.set_test_enabled(False)
+        if not self._exclude_windows():
+            self.panel.set_summary('心法取图失败', True)
+            return
+        self._xinfa_roster = {}
+        self._xinfa_serial += 1
+        request = self._xinfa_request = self._xinfa_serial
+        self._xinfa_owns_capture = not self.running
+        self._xinfa_last_sample = 0.
+        if not self._continuous_analysis:
+            self.panel.set_grid_busy(True)
+        self.panel.set_status('识别开局心法中')
+        self._analysis_pending = True
+        if self._xinfa_owns_capture:
+            self._start_capture()
+        QTimer.singleShot(10000, self, lambda: self._xinfa_timed_out(request))
+
+    def _finish_xinfa_scan(self):
+        self._xinfa_request = None
+        if not self._continuous_analysis:
+            self._analysis_pending = False
+            self.panel.set_grid_busy(False)
+        if self._xinfa_owns_capture:
+            self._xinfa_owns_capture = False
+            self._set_running(False)
+            self.stop_requested.emit()
+            self._restore_remote_windows()
+
+    def _xinfa_timed_out(self, request):
+        if self._quitting or request != self._xinfa_request:
+            return
+        self._finish_xinfa_scan()
+        self.panel.set_summary('心法识别超时 · 可重试', True)
+
+    def _apply_xinfa_scan(self, request, region, frame, metadata):
+        if (self._quitting or not self.grid_ready or region != self._region
+                or request != self._xinfa_request or metadata.get('generation') != self._generation):
+            return
+        self._finish_xinfa_scan()
+        if metadata.get('xinfa_error'):
+            self.panel.set_summary('心法识别失败 · 可重试', True)
+            return
+        from .xinfa import catalogue
+
+        cells = self.team_layout.cells(frame.size())
+        specs = catalogue()
+        draft = metadata['xinfa_draft']
+        self._xinfa_roster = {cell.key: draft[cell.key] for cell in cells if draft.get(cell.key) in specs}
+        if len(self._xinfa_roster) == len(cells):
+            self.panel.set_status(f'准备就绪 · 心法{len(cells)}/{len(cells)}')
+        else:
+            self._review_xinfa(region, unresolved_only=True, frame=frame)
+
+    def _review_xinfa(self, region, *, unresolved_only=False, frame=None):
+        if (self._quitting or self._dialog is not None or not self.grid_ready or region != self._region
+                or self._xinfa_request is not None):
+            return
+        from .xinfa_dialog import XinfaDialog
+        layout = self.team_layout
+        groups = [group.group for group in layout.groups]
+        dialog = XinfaDialog(groups, self._xinfa_roster, self.panel, unresolved_only=unresolved_only,
+                             frame=frame, layout=layout)
+        self._dialog = dialog
+        dialog.show()
+        exclude_from_capture(dialog)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        self._dialog = None
+        if not self._quitting and self.grid_ready and region == self._region and layout == self.team_layout:
+            if accepted:
+                self._xinfa_roster = dialog.roster()
+            if accepted and self._continuous_analysis:
+                self.analyze_mode(self.analysis_mode)
+            elif not self._continuous_analysis:
+                missing = len(groups) * 5 - len(self._xinfa_roster)
+                self.panel.set_status(f'心法待确认 · {missing} 格' if missing else '准备就绪 · 心法已确认')
+        dialog.deleteLater()
 
     def open_preview(self):
         if getattr(self, "remote_compatible", False):
@@ -1528,9 +1759,12 @@ class OverlayController(QObject):
             remote_changed = dialog.remote_box.isChecked() != getattr(self, "remote_compatible", False)
             if remote_changed:
                 self.set_remote_mode(dialog.remote_box.isChecked())
+            if self.team_layout != dialog.selected_layout:
+                self._xinfa_roster = {}
+                self._xinfa_request = None
             self.team_layout = dialog.selected_layout
-            self.tank_key = None
-            self.snapshot_stage = 'after_tank'
+            self.tank_key = dialog.tank_box.currentData()
+            self.snapshot_stage = dialog.stage_box.currentData()
             self.panel.setWindowOpacity(self.panel_opacity)
             self.scan.set_border_opacity(self.border_opacity)
             self.set_locked(self.locked)
@@ -1582,6 +1816,8 @@ class OverlayController(QObject):
             self._restore_remote_windows()
         self._cancel_grid_request()
         self._cancel_tank_selection()
+        if self._xinfa_request is not None:
+            self._finish_xinfa_scan()
         if self._hidden or not self.panel.isVisible():
             self._hidden = False
             self.scan.show()
@@ -1634,14 +1870,12 @@ class OverlayController(QObject):
 
     def set_exact_preference(self, enabled):
         self.prefer_exact = bool(enabled)
+        self.panel.set_exact_preference(self.prefer_exact)
         self.persist()
         if self._continuous_analysis:
             self.analyze_mode(self.analysis_mode)
-        elif self._players:
-            from .live_strategy import evaluate_exact
-            evaluator = evaluate_exact if self.prefer_exact else evaluate
-            self.apply_analysis(evaluator(self._players, self.analysis_mode,
-                                          difficulty=getattr(self, 'difficulty', 'normal')))
+        elif self._players and not self.auto_timeline and not self.test_enabled:
+            self.set_player_states(self._players)
 
     def set_difficulty(self, difficulty):
         self.difficulty = 'heroic' if difficulty == 'heroic' else 'normal'
@@ -1649,10 +1883,8 @@ class OverlayController(QObject):
         self.persist()
         if self._continuous_analysis:
             self.analyze_mode(self.analysis_mode)
-        elif self._players and not self.test_enabled:
-            from .live_strategy import evaluate_exact
-            evaluator = evaluate_exact if self.prefer_exact else evaluate
-            self.apply_analysis(evaluator(self._players, self.analysis_mode, difficulty=self.difficulty))
+        elif self._players and not self.auto_timeline and not self.test_enabled:
+            self.set_player_states(self._players)
 
     def export_debug_bundle(self):
         folder = settings_path().parent
@@ -1677,6 +1909,8 @@ class OverlayController(QObject):
     def _screen_removed(self, screen):
         self._cancel_grid_request()
         self._cancel_tank_selection()
+        if self._xinfa_request is not None:
+            self._finish_xinfa_scan()
         self.grid_ready = False
         if self.running:
             self._set_running(False)
@@ -1697,6 +1931,8 @@ class OverlayController(QObject):
             "grid_ready": self.grid_ready,
             "tank_key": self.tank_key,
             "snapshot_stage": self.snapshot_stage,
+            'manual_fan_stage': self.snapshot_stage,
+            'auto_stage_enabled': self.auto_timeline,
             "remote_compatible": getattr(self, "remote_compatible", False),
             'prefer_exact': getattr(self, 'prefer_exact', False),
             'difficulty': getattr(self, 'difficulty', 'normal'),
@@ -1802,6 +2038,10 @@ def main() -> int:
         checked = evaluate_current([PlayerState(f'g{i//5+1}p{i%5+1}', 'red' if value>0 else 'black', abs(value))
                                     for i, value in enumerate(values)])
         assert checked.strategy['quota']['selected_count'] == 1 and checked.final_black == 13
+        from .xinfa_recognition import RosterReader
+        from .xinfa import catalogue
+        reader = RosterReader()
+        assert set(reader.classes) == set(catalogue()) and catalogue()['youluo'].nickname == '无相楼'
         record_environment(settings_path().parent)
         LOG.info("Runtime check passed: Qt, capture module, OpenCV, %s recognizer/assets, grid and analysis",engine.backend)
         return 0

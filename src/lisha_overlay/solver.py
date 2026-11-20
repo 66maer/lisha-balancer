@@ -286,7 +286,9 @@ def solve(players: Sequence[PlayerState], mode: Mode = "all", *,
           snapshot_stage: Stage = "before_tank", allow_missing_tank: bool = False,
           current_snapshot: bool = False, preferred_actions: dict[str,tuple[bool,int]] | None = None,
           fixed_centers: tuple[str,str,str] | None = None,
-          tolerance: int = 2, avoid_overlap: bool = False) -> SearchResult:
+          tolerance: int = 2, avoid_overlap: bool = False,
+          prefer_exact: bool | None = None, plan_rank=None,
+          guide_penalties: dict[str, int] | None = None) -> SearchResult:
     """Find a weak-settlement plan in O(players × difference × 4 × options).
 
     The DP tracks final red-minus-black count and up to three available
@@ -319,7 +321,9 @@ def solve(players: Sequence[PlayerState], mode: Mode = "all", *,
     except IllegalAction as error:
         return SearchResult(None, None, "一式前状态无法安全推进：" + str(error))
 
-    zero = (0,) * (11 + int(current_snapshot and avoid_overlap) + int(preferred_actions is not None))
+    current_policy = current_snapshot or prefer_exact is not None
+    zero = (0,) * (11 + int(current_policy and avoid_overlap) + int(preferred_actions is not None)
+                   + int(guide_penalties is not None))
     # Neutral isolated carriers must occupy a center rather than a helper slot.
     # Track their number separately so cap(eligible, 3) cannot hide a fourth one.
     # (difference, eligible-centers, forced-centers): (cost, player-options)
@@ -327,7 +331,7 @@ def solve(players: Sequence[PlayerState], mode: Mode = "all", *,
     explored = 0
     for index, player in enumerate(players):
         options = _options(initial[player.player_key], tank=player.player_key == tank_key,
-                           mode=mode, current_policy=current_snapshot,
+                           mode=mode, current_policy=current_policy,
                            preferred_action=preferred_actions.get(player.player_key,(False,0)) if preferred_actions is not None else None,
                            avoid_overlap=avoid_overlap)
         if preferred_actions is not None:
@@ -346,7 +350,10 @@ def solve(players: Sequence[PlayerState], mode: Mode = "all", *,
                     continue
                 key = (difference + delta, min(3, center_count + int(option.hits == 1)), next_forced)
                 position = -(1 << (len(players)-1-index)) if option.fan or option.hits else 0
-                candidate_cost = tuple(a + b for a, b in zip(cost, option.cost + (position,)))
+                role_cost = () if guide_penalties is None else (
+                    guide_penalties.get(player.player_key, 0) if option.hits == 1 else 0,
+                )
+                candidate_cost = tuple(a + b for a, b in zip(cost, option.cost + role_cost + (position,)))
                 previous = updated.get(key)
                 if previous is None or candidate_cost < previous[0]:
                     updated[key] = (candidate_cost, path + (option,))
@@ -358,29 +365,43 @@ def solve(players: Sequence[PlayerState], mode: Mode = "all", *,
     for (difference, centers, _forced_count), (cost, path) in dp.items():
         if centers == 3 and abs(difference) <= tolerance:
             prefix=6 if preferred_actions is not None else 5
-            score = ((*cost[:prefix], abs(difference), *cost[prefix:]) if current_snapshot
-                     else (abs(difference), *cost))
+            exact_first = prefer_exact if prefer_exact is not None else not current_snapshot
+            score = ((abs(difference), *cost) if exact_first
+                     else (*cost[:prefix], abs(difference), *cost[prefix:]))
             candidates.append((score, path))
     if not candidates:
         return SearchResult(None, None, f"在当前模式允许的扇形与三圈站位内，未找到人数差不超过{tolerance}的方案。", explored)
+    best = None
     for _score, path in sorted(candidates, key=lambda item: item[0]):
         eligible = [(index, player.player_key)
                     for index, (player, option) in enumerate(zip(players, path)) if option.hits == 1]
         forced = {player.player_key for player, option in zip(players, path) if option.forced_center}
         selected = sorted(item for item in eligible if item[1] in forced)
-        selected.extend(sorted(item for item in eligible if item[1] not in forced)[:3 - len(selected)])
+        possible = [item for item in eligible if item[1] not in forced]
+        if guide_penalties is not None:
+            possible.sort(key=lambda item: (guide_penalties.get(item[1], 0), item[0]))
+        selected.extend(possible[:3 - len(selected)])
         centers = fixed_centers if fixed_centers is not None else tuple(item[1] for item in sorted(selected))
         center_orders = {key: order for order, key in enumerate(centers, 1)}
         actions = tuple(
             PlayerAction(player.player_key, option.fan,
-                         ((1,3) if option.hits==2 and preferred_actions is not None else tuple(range(1, option.hits + 1))) if option.hits >= 2 else
+                         ((1,3) if option.hits==2 and (preferred_actions is not None or plan_rank is not None)
+                          else tuple(range(1, option.hits + 1))) if option.hits >= 2 else
                          (center_orders.get(player.player_key, 1),) if option.hits else ())
             for player, option in zip(players, path) if option.fan or option.hits
         )
         plan = SolverPlan(mode, snapshot_stage, actions, centers,
                           reference_without_tank=tank_key is None and not current_snapshot,
-                          current_snapshot=current_snapshot,command_style=preferred_actions is not None)  # type: ignore[arg-type]
+                          current_snapshot=current_snapshot,
+                          command_style=preferred_actions is not None or plan_rank is not None,
+                          spoken_policy=plan_rank is not None)  # type: ignore[arg-type]
         simulation = simulate_plan(players, plan, tolerance=tolerance)
         if simulation.valid:
-            return SearchResult(plan, simulation, explored=explored)
+            if plan_rank is None:
+                return SearchResult(plan, simulation, explored=explored)
+            rank = plan_rank(plan, simulation)
+            if best is None or rank < best[0]:
+                best = rank, plan, simulation
+    if best is not None:
+        return SearchResult(best[1], best[2], explored=explored)
     return SearchResult(None, None, "候选方案未通过完整技能顺序校验。", explored)

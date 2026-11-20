@@ -4,10 +4,11 @@ from unittest.mock import Mock
 import time
 
 import pytest
-from PySide6.QtCore import QEventLoop, QTimer
+import numpy as np
+from PySide6.QtCore import QEventLoop, QRectF, QTimer
 
 from lisha_overlay import app as application, platform_win, overlay, tank_picker
-from lisha_overlay.team_layout import Annotation
+from lisha_overlay.team_layout import Annotation, TeamLayout
 
 
 def wait_until(predicate, timeout=3):
@@ -21,7 +22,8 @@ def wait_until(predicate, timeout=3):
 
 @pytest.fixture
 def remote_controller(qt_app, monkeypatch, tmp_path):
-    monkeypatch.setattr(application, "load_settings", lambda: {"remote_compatible": True, "grid_ready": True})
+    monkeypatch.setattr(application, "load_settings",
+                        lambda: {"remote_compatible": True, "grid_ready": True, "auto_timeline": False})
     monkeypatch.setattr(application, "save_settings", lambda value: None)
     monkeypatch.setattr(application, "settings_path", lambda: tmp_path / "settings.json")
     region = {"left": 20, "top": 30, "width": 320, "height": 400}
@@ -78,6 +80,74 @@ def test_pause_during_pending_snapshot_restores_hidden_windows(remote_controller
     controller.toggle_capture()
     assert not controller.running and controller.scan.isVisible()
     assert controller._remote_capture_kind is None
+
+
+def test_selected_tank_badge_is_hidden_for_capture_and_preserved_on_manual_takeover(remote_controller):
+    controller, _ = remote_controller
+    controller._update_region()
+    controller.grid_ready = True
+    controller._tank_selected('g2p5')
+    assert controller.scan.markers.tank_key == 'g2p5'
+    assert controller.panel.tank_button.text() == 'T 2-5'
+    assert controller.auto_timeline and controller.panel.timeline_button.isChecked()
+    controller.panel.timeline_button.click()
+    assert not controller.auto_timeline and controller.panel.timeline_button.accessibleName() == '当前手动阶段'
+    controller.persist()
+    assert controller.settings['auto_stage_enabled'] is False
+    controller.panel.timeline_button.click()
+    assert controller.auto_timeline
+    controller.toggle_capture()
+    assert not controller.scan.markers.isVisible()
+    wait_until(lambda: controller.scan.markers.isVisible())
+    assert controller._metadata['hidden_layers'] == ['marksOverlay']
+    controller.panel.mode_buttons['circle'].click()
+    assert not controller.auto_timeline and controller.analysis_mode == 'circle'
+    assert controller.scan.markers.tank_key == 'g2p5'
+    controller.panel.strategy_button.click()
+    assert controller.prefer_exact and controller.settings['prefer_exact']
+    controller.set_exact_preference(False)
+    assert controller.panel.strategy_button.accessibleName() == '当前简操模式'
+
+
+@pytest.mark.parametrize('unresolved', [False, True])
+def test_prepare_calibrates_then_reads_only_opening_hearts(remote_controller, monkeypatch, unresolved):
+    from lisha_overlay import grid_detection, xinfa_recognition
+    from lisha_overlay.xinfa_dialog import XinfaDialog
+
+    controller, captures = remote_controller
+    layout = TeamLayout()
+    keys = [cell.key for cell in layout.cells(QRectF(0, 0, 320, 400))]
+    missing = 'g2p5'
+    detection = SimpleNamespace(layout=layout, bounds=QRectF(0, 0, 320, 400), confidence=.98)
+    monkeypatch.setattr(grid_detection, 'detect_team_grid', lambda image: detection)
+    reader = SimpleNamespace(classes=('binxin', 'aoxue'), read=lambda *_: (
+        {key: None if unresolved and key == missing else np.array([.99, .01]) for key in keys}, []
+    ))
+    monkeypatch.setattr(xinfa_recognition, 'RosterReader', lambda: reader)
+    buff_analysis = Mock(side_effect=AssertionError('Preparation must skip live Buff recognition'))
+    monkeypatch.setattr(type(controller.analysis_worker._engine), 'analyze', buff_analysis)
+    dialogs = []
+    original_exec = XinfaDialog.exec
+
+    def review(dialog):
+        dialogs.append(set(dialog.slots))
+        if missing in dialog.slots:
+            combo = dialog.slots[missing]
+            combo.setCurrentIndex(combo.findData('aoxue'))
+        QTimer.singleShot(0, dialog.accept)
+        return original_exec(dialog)
+
+    monkeypatch.setattr(XinfaDialog, 'exec', review)
+    controller.panel.grid_button.click()
+    assert controller._grid_busy and not controller.panel.grid_button.isEnabled()
+    wait_until(lambda: controller.panel._summary_label.text().startswith('准备就绪'), timeout=6)
+    assert controller.grid_ready and len(controller._xinfa_roster) == 25
+    assert controller._xinfa_roster[missing] == ('aoxue' if unresolved else 'binxin')
+    assert dialogs == ([{missing}] if unresolved else [])
+    assert controller.panel.start_button.isEnabled() and controller.panel.grid_button.isEnabled()
+    assert not controller.running and not controller._continuous_analysis
+    assert controller._remote_capture_kind is None and all(capture.closed for capture in captures)
+    buff_analysis.assert_not_called()
 
 
 def test_capture_failure_restores_windows_and_stops_the_capture(remote_controller, monkeypatch):

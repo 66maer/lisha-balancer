@@ -1,0 +1,262 @@
+{
+  "classes": [
+    "huajian",
+    "lijing",
+    "binxin",
+    "yunchang",
+    "yijin",
+    "xisui",
+    "zixia",
+    "taixu",
+    "aoxue",
+    "tielao",
+    "cangjian",
+    "dujing",
+    "butian",
+    "jingyu",
+    "tianluo",
+    "fenying",
+    "mingzun",
+    "xiaochen",
+    "fenshan",
+    "tiegu",
+    "mowen",
+    "xiangzhi",
+    "beiao",
+    "linghai",
+    "yinlong",
+    "taixuan",
+    "wufang",
+    "lingsu",
+    "gufeng",
+    "shanhai",
+    "zhoutian",
+    "youluo"
+  ],
+  "specializations": {
+    "huajian": {
+      "name": "花间游",
+      "nickname": "花间",
+      "school": "万花",
+      "role": "dps",
+      "ranged": true
+    },
+    "lijing": {
+      "name": "离经易道",
+      "nickname": "奶花",
+      "school": "万花",
+      "role": "healer",
+      "ranged": true
+    },
+    "binxin": {
+      "name": "冰心诀",
+      "nickname": "冰心",
+      "school": "七秀",
+      "role": "dps",
+      "ranged": true
+    },
+    "yunchang": {
+      "name": "云裳心经",
+      "nickname": "奶秀",
+      "school": "七秀",
+      "role": "healer",
+      "ranged": true
+    },
+    "yijin": {
+      "name": "易筋经",
+      "nickname": "和尚",
+      "school": "少林",
+      "role": "dps",
+      "ranged": false
+    },
+    "xisui": {
+      "name": "洗髓经",
+      "nickname": "和尚T",
+      "school": "少林",
+      "role": "tank",
+      "ranged": false
+    },
+    "zixia": {
+      "name": "紫霞功",
+      "nickname": "气纯",
+      "school": "纯阳",
+      "role": "dps",
+      "ranged": true
+    },
+    "taixu": {
+      "name": "太虚剑意",
+      "nickname": "剑纯",
+      "school": "纯阳",
+      "role": "dps",
+      "ranged": false
+    },
+    "aoxue": {
+      "name": "傲血战意",
+      "nickname": "天策",
+      "school": "天策",
+      "role": "dps",
+      "ranged": false
+    },
+    "tielao": {
+      "name": "铁牢律",
+      "nickname": "策T",
+      "school": "天策",
+      "role": "tank",
+      "ranged": false
+    },
+    "cangjian": {
+      "name": "藏剑",
+      "nickname": "藏剑",
+      "school": "藏剑",
+      "role": "dps",
+      "ranged": false
+    },
+    "dujing": {
+      "name": "毒经",
+      "nickname": "毒经",
+      "school": "五毒",
+      "role": "dps",
+      "ranged": true
+    },
+    "butian": {
+      "name": "补天诀",
+      "nickname": "奶毒",
+      "school": "五毒",
+      "role": "healer",
+      "ranged": true
+    },
+    "jingyu": {
+      "name": "惊羽诀",
+      "nickname": "鲸鱼",
+      "school": "唐门",
+      "role": "dps",
+      "ranged": true
+    },
+    "tianluo": {
+      "name": "天罗诡道",
+      "nickname": "田螺",
+      "school": "唐门",
+      "role": "dps",
+      "ranged": true
+    },
+    "fenying": {
+      "name": "焚影圣诀",
+      "nickname": "焚影",
+      "school": "明教",
+      "role": "dps",
+      "ranged": false
+    },
+    "mingzun": {
+      "name": "明尊琉璃体",
+      "nickname": "喵T",
+      "school": "明教",
+      "role": "tank",
+      "ranged": false
+    },
+    "xiaochen": {
+      "name": "笑尘诀",
+      "nickname": "丐帮",
+      "school": "丐帮",
+      "role": "dps",
+      "ranged": false
+    },
+    "fenshan": {
+      "name": "分山劲",
+      "nickname": "苍云",
+      "school": "苍云",
+      "role": "dps",
+      "ranged": false
+    },
+    "tiegu": {
+      "name": "铁骨衣",
+      "nickname": "苍云T",
+      "school": "苍云",
+      "role": "tank",
+      "ranged": false
+    },
+    "mowen": {
+      "name": "莫问",
+      "nickname": "莫问",
+      "school": "长歌",
+      "role": "dps",
+      "ranged": true
+    },
+    "xiangzhi": {
+      "name": "相知",
+      "nickname": "奶歌",
+      "school": "长歌",
+      "role": "healer",
+      "ranged": true
+    },
+    "beiao": {
+      "name": "北傲诀",
+      "nickname": "霸刀",
+      "school": "霸刀",
+      "role": "dps",
+      "ranged": false
+    },
+    "linghai": {
+      "name": "凌海诀",
+      "nickname": "蓬莱",
+      "school": "蓬莱",
+      "role": "dps",
+      "ranged": false
+    },
+    "yinlong": {
+      "name": "隐龙诀",
+      "nickname": "凌雪",
+      "school": "凌雪",
+      "role": "dps",
+      "ranged": false
+    },
+    "taixuan": {
+      "name": "太玄经",
+      "nickname": "衍天",
+      "school": "衍天",
+      "role": "dps",
+      "ranged": false
+    },
+    "wufang": {
+      "name": "无方",
+      "nickname": "无方",
+      "school": "药宗",
+      "role": "dps",
+      "ranged": true
+    },
+    "lingsu": {
+      "name": "灵素",
+      "nickname": "奶药",
+      "school": "药宗",
+      "role": "healer",
+      "ranged": true
+    },
+    "gufeng": {
+      "name": "孤峰诀",
+      "nickname": "刀宗",
+      "school": "刀宗",
+      "role": "dps",
+      "ranged": false
+    },
+    "shanhai": {
+      "name": "山海心诀",
+      "nickname": "万灵",
+      "school": "万灵",
+      "role": "dps",
+      "ranged": true
+    },
+    "zhoutian": {
+      "name": "周天功",
+      "nickname": "段氏",
+      "school": "段氏",
+      "role": "dps",
+      "ranged": true
+    },
+    "youluo": {
+      "name": "幽罗引",
+      "nickname": "无相楼",
+      "school": "无相楼",
+      "role": "dps",
+      "ranged": true
+    }
+  }
+}

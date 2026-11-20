@@ -92,6 +92,21 @@ def test_instruction_is_bold_and_impossible_message_is_exact(controller,qt_app):
     assert controller.panel._instruction_label.font().bold()
 
 
+def test_published_circle_plan_matches_numbered_team_marks_and_clears_on_stop(controller):
+    players = [PlayerState(f'g{i//5+1}p{i%5+1}', 'red' if i < 12 else 'black' if i < 24 else 'none',
+                           int(i < 24)) for i in range(25)]
+    controller.select_analysis_mode('circle')
+    controller.set_player_states(players)
+    centers = controller._last_result.plan.centers
+    assert '引导' in controller.panel._instruction_labels[1].text()
+    assert '<img ' in controller.panel._buff_plan_labels[1].text()
+    assert [(mark.player_key, mark.order) for mark in controller.scan.markers.displayed_annotations()] == list(
+        zip(centers, (1, 2, 3)))
+    controller.stop_analysis()
+    assert not controller.scan.markers.displayed_annotations()
+    assert all(not label.text() for label in controller.panel._buff_plan_labels)
+
+
 def test_difficulty_button_replans_persists_and_invalidates_inflight_results(controller):
     from lisha_overlay.live_strategy import evaluate_current as live_evaluate
     c = controller

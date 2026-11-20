@@ -58,6 +58,7 @@ class MarksOverlay(QWidget):
         self.topmost = True
         self.annotations: list[Annotation] = []
         self.analysis_mode = "all"
+        self.tank_key = None
         self.test_enabled = False
         self.calibration_enabled = False
         self.team_layout = TeamLayout()
@@ -81,6 +82,10 @@ class MarksOverlay(QWidget):
         if mode not in ("all", "fan", "circle"):
             raise ValueError("Analysis mode must be all, fan, or circle.")
         self.analysis_mode = mode
+        self.update()
+
+    def set_tank_key(self, key: str | None):
+        self.tank_key = key
         self.update()
 
     def set_test_enabled(self, enabled: bool):
@@ -223,6 +228,19 @@ class MarksOverlay(QWidget):
             by_player[annotation.player_key].append(annotation)
         for cell in cells:
             annotations = by_player.get(cell.key, [])
+            if cell.key == self.tank_key:
+                size = min(15, cell.rect.height() * 0.57, cell.rect.width() * 0.25)
+                box = QRectF(cell.rect.left() + 2, cell.rect.top() + 2, size, size)
+                painter.setBrush(QColor('#2c2415'))
+                painter.setPen(QPen(QColor('#ffda7a'), 1))
+                painter.drawRoundedRect(box, 3, 3)
+                font = painter.font()
+                font.setPixelSize(max(1, int(size * 0.76)))
+                font.setBold(True)
+                painter.save()
+                painter.setFont(font)
+                painter.drawText(box, Qt.AlignmentFlag.AlignCenter, 'T')
+                painter.restore()
             if annotations:
                 if self.test_enabled:
                     self._draw_test_icons(painter, cell, annotations)

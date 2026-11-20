@@ -109,6 +109,7 @@ class VisionEngine:
                     sample[ys.min():ys.max()+1, xs.min():xs.max()+1], cv2.COLOR_BGR2GRAY))
         self._learned_recognizer = LearnedRecognizer(
             learned_assets, scale_offsets=(-1, 0, 1), cache_capacity=2048)
+        self._recover_clipped_icons = self._learned_recognizer.configuration.get('recover_clipped_icons', False)
         self._cursor_occlusion = CursorOcclusionDetector(learned_assets)
         self._death_word = DeathWordDetector(learned_assets)
         self._scene_words = SceneWordDetector(learned_assets)
@@ -123,11 +124,21 @@ class VisionEngine:
         roi = image[top:bottom, left:right]
         if not roi.size:
             return False, 0.0
-        token = (left, top, right, bottom, roi.tobytes())
+        # Some roster fonts center the word far enough left that the legacy
+        # health-value region clips the first character.
+        word_area = QRectF(cell.rect.x() + cell.rect.width() * 0.27,
+                           cell.rect.y() + cell.rect.height() * 0.31,
+                           cell.rect.width() * 0.72, cell.rect.height() * 0.65)
+        word_left, word_top, word_right, word_bottom = _pixel_rect(word_area, image)
+        word_roi = image[word_top:word_bottom, word_left:word_right]
+        token = (left, top, right, bottom, roi.tobytes(),
+                 word_left, word_top, word_right, word_bottom, word_roi.tobytes())
         cached = self._dead_cache.get(cell.key)
         if cached is not None and cached[0] == token:
             return cached[1]
         literal = self._death_word.match(roi, cell.rect.height())
+        if not literal[0] and word_roi.size:
+            literal = max(literal, self._death_word.match(word_roi, cell.rect.height()))
         if literal[0]:
             self._dead_cache[cell.key] = (token, literal)
             return literal
@@ -166,9 +177,76 @@ class VisionEngine:
         self._dead_cache[cell.key] = (token, result)
         return result
 
+    def _recover_icons(self, image, cells, aligned, crops, predictions, recognizer, side):
+        unresolved = []
+        geometry_images = []
+        for index, (cell, prediction, (_, original)) in enumerate(zip(cells, predictions, crops)):
+            if not aligned[cell.key]:
+                continue
+            x, y, width, height = cell.rect.getRect()
+            band = QRectF(x - 1, y + height * .39, width + 1, height * .59)
+            left, top, right, bottom = _pixel_rect(band, image)
+            strip = image[top:bottom, left:right, :3]
+            if min(strip.shape[:2]) < 8:
+                continue
+            geometry_images.append(strip)
+            if prediction['state'] != 'none':
+                continue
+            if original[0] - left < 3 and abs(original[1] - top) < 3:
+                continue
+            near_left = strip[:side, :side * 2]
+            gray = cv2.cvtColor(near_left, cv2.COLOR_BGR2GRAY)
+            if np.abs(cv2.Laplacian(gray, cv2.CV_32F)).mean() < 5:
+                continue
+            unresolved.append((index, strip, [left, top, right, bottom]))
+        if not unresolved:
+            return
+
+        previous_side = recognizer.fixed_icon_side
+        batch = recognizer.last_inference.copy()
+        try:
+            recognizer.fixed_icon_side = side + 1
+            rescanned = recognizer.predict([strip for _, strip, _ in unresolved])
+            for key in batch:
+                batch[key] += recognizer.last_inference.get(key, 0)
+            unresolved = self._adopt_icon_reads(unresolved, rescanned, crops, predictions)
+            if unresolved:
+                # The few unresolved rows can contain mostly clutter. Use
+                # all aligned rows for the baseline and widen the icon view.
+                recognizer.fixed_icon_side = side + 3
+                rescanned = recognizer.predict([strip for _, strip, _ in unresolved],
+                                               geometry_images=geometry_images)
+                for key in batch:
+                    batch[key] += recognizer.last_inference.get(key, 0)
+                self._adopt_icon_reads(unresolved, rescanned, crops, predictions)
+        finally:
+            recognizer.fixed_icon_side = previous_side
+        recognizer.last_inference = batch
+
+    @staticmethod
+    def _adopt_icon_reads(rows, rescanned, crops, predictions):
+        unresolved = []
+        for row, candidate in zip(rows, rescanned):
+            index, strip, bounds = row
+            if (candidate['state'] == 'none' or candidate['confidence'] < .90
+                    or candidate.get('unverified_body') or candidate.get('scale_agreement') != [3, 3]):
+                unresolved.append(row)
+                continue
+            previous = predictions[index]
+            predictions[index] = {
+                **candidate,
+                'isolated': previous['isolated'],
+                'isolation_confirmed': previous['isolation_confirmed'],
+                'unverified_isolation': previous['unverified_isolation'],
+                'best_isolation_score': previous.get('best_isolation_score', 0.),
+                'recovered_clipped_icon': True,
+            }
+            crops[index] = (strip, bounds)
+        return unresolved
+
     def analyze(self, frame: QImage) -> list[PlayerState]:
         from .learned_rois import alignment_evidence
-        from .learned_geometry import calibrated_bands
+        from .learned_geometry import calibrated_bands, fit_buff_band
         from .occlusion import intersects
         image = _qimage_bgr(frame)
         if image.shape[:2] != self._learned_image_size:
@@ -178,19 +256,32 @@ class VisionEngine:
         crops, side_hint, scale_support, geometry = calibrated_bands(image, cells, return_evidence=True)
         if self._learned_icon_side is None and scale_support >= 3 and all(aligned.values()):
             self._learned_icon_side = side_hint
-        self._learned_recognizer.fixed_icon_side = self._learned_icon_side or side_hint
+        icon_side = self._learned_icon_side or side_hint
+        self._learned_recognizer.fixed_icon_side = icon_side
+        local_rims = geometry.get('rims', {})
         stable_crops = []
-        for cell, (crop, bounds) in zip(cells, crops):
+        first_icons = {}
+        for index, (cell, (_, bounds)) in enumerate(zip(cells, crops)):
             if (cell.key not in self._learned_band_bounds and aligned[cell.key]
                     and geometry['left_support'].get(cell.group, 0) >= 2 and cell.key in geometry['row_keys']):
                 self._learned_band_bounds[cell.key] = bounds
             if cell.key in self._learned_band_bounds:
                 bounds = self._learned_band_bounds[cell.key]
-                left, top, right, bottom = bounds
-                crop = image[top:bottom, left:right, :3]
+            if self._recover_clipped_icons and aligned[cell.key]:
+                bounds, first_icon = fit_buff_band(bounds, cell, local_rims.get(cell.key, ()), icon_side, image.shape[0])
+                if first_icon is not None:
+                    first_icons[index] = first_icon
+            left, top, right, bottom = bounds
+            crop = image[top:bottom, left:right, :3]
             stable_crops.append((crop, bounds))
         crops = stable_crops
-        predictions = self._learned_recognizer.predict([crop for crop, bounds in crops])
+        images = [crop for crop, _ in crops]
+        predictions = (self._learned_recognizer.predict(images, first_icons=first_icons) if first_icons
+                       else self._learned_recognizer.predict(images))
+        # With sparse rim evidence, column and row offsets can clip a first
+        # slot. Keep the calibrated read when the roster supplies ample rims.
+        if self._recover_clipped_icons and scale_support < max(3, len(cells) // 3):
+            self._recover_icons(image, cells, aligned, crops, predictions, self._learned_recognizer, side_hint)
         occlusions = self._cursor_occlusion.find(image,float(np.median([c.rect.height() for c in cells])))
         scene_words = self._scene_words.find(image,[bounds for crop,bounds in crops],float(np.median([c.rect.height() for c in cells])))
         # Preserve the existing death classifier exactly. Its independent

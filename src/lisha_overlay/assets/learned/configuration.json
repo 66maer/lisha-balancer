@@ -1,7 +1,7 @@
 {
-  "model_sha256": "ef8f27ee118e0391de364fd3f341a6157ced12f8f985ae3b79525a4eb5373270",
+  "model_sha256": "15e6913a3760b2d5b8871d9f12bf5943ba15b8d340a6bb59bd0a9aafc149d36e",
   "source_configuration_sha256": "c7fd77f706be44b069d0d41b07f2110f9645f7bf090ac9c9ab89b6048788a45c",
-  "source_experiment": "icon-acquisition-counter-001",
+  "source_experiment": "nov19-video-001",
   "proposal_geometry": {
     "snap_shared_top": true,
     "minimum_texture": 4.893749856948852,
@@ -35,7 +35,9 @@
     "One human-confirmed real red4 video example is now included in training; it does not establish unseen red4 accuracy.",
     "The source overlay defaults to this learned CPU backend. Known regressions passed; competing live-game load and unseen accounts remain unvalidated.",
     "Death and foreground-UI protections use assistant-reviewed visible shapes/words, not systematic human death or occlusion labels.",
-    "Exact three-input caching reuses only raw network outputs. Changing input pixels are re-evaluated; geometry and occlusion checks still run every frame."
+    "Exact three-input caching reuses only raw network outputs. Changing input pixels are re-evaluated; geometry and occlusion checks still run every frame.",
+    "New video labels are independently read from the supplied recordings by the assistant. No human answers were added by training.",
+    "The geometry recovery rule was amended after an initial replay on video 4; later verification uses six additional timestamps from the same withheld recording."
   ],
   "cursor_mask_sha256": "afe6883937d1eb9862d680138e3e6d40b8af2b8e0e07c4af832cba89119f0f40",
   "cursor_reference": {
@@ -77,5 +79,44 @@
       "purpose": "visible_game_menu_cue_only_not_player_state",
       "assistant_reference": true
     }
-  ]
+  ],
+  "death_word_video_mask_sha256": "87f2c8390b9940d6601a38cb3d3a3ea81b5673338f3763efb683d2e07a3626ea",
+  "previous_model_sha256": "ef8f27ee118e0391de364fd3f341a6157ced12f8f985ae3b79525a4eb5373270",
+  "training_reference": {
+    "train_video_groups": [
+      1,
+      2,
+      5
+    ],
+    "validation_video_groups": [
+      3
+    ],
+    "test_video_groups": [
+      4
+    ],
+    "human_answer_count_preserved": 743,
+    "new_labels": "assistant_visual_reference",
+    "training_rows": 525,
+    "validation_rows": 175,
+    "recording_count": 5,
+    "train_source_groups": [
+      "nov19-v1",
+      "nov19-v2",
+      "nov19-v5"
+    ]
+  },
+  "training_weight_fraction": 0.35,
+  "training_candidate_sha256": "df8ed3237520522e81a1ac5288250bd1c5dcc537520f61546812a661f32fcb8a",
+  "adopted_training_heads": [
+    "original.word",
+    "word_repair",
+    "number_repair"
+  ],
+  "recover_clipped_icons": true,
+  "death_word_video_reference": {
+    "source_group": "nov19-v1",
+    "seconds": 54.0,
+    "layout_slot": "g3p1",
+    "label_basis": "visible_literal_glyph"
+  }
 }

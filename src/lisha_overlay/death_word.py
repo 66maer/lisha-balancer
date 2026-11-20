@@ -13,12 +13,16 @@ class DeathWordDetector:
     def __init__(self,asset_directory=None):
         directory=Path(asset_directory) if asset_directory else Path(__file__).parent/'assets'/'learned'
         self.templates=[];self.scaled={}
-        extra=directory/'death_word_mask.png'
-        if extra.is_file():
-            config=json.loads((directory/'configuration.json').read_text(encoding='utf8'))
-            if hashlib.sha256(extra.read_bytes()).hexdigest()!=config.get('death_word_mask_sha256'):
+        config_path = directory / 'configuration.json'
+        config = json.loads(config_path.read_text(encoding='utf8')) if config_path.is_file() else {}
+        for filename in ('death_word_mask.png', 'death_word_video_mask.png'):
+            path = directory / filename
+            expected = config.get(f'{path.stem}_sha256')
+            if expected is None and not path.is_file():
+                continue
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
                 raise ValueError('重伤字样参考图校验失败。')
-            self.templates.append(cv2.imdecode(np.fromfile(extra,dtype=np.uint8),cv2.IMREAD_GRAYSCALE))
+            self.templates.append(cv2.imdecode(np.fromfile(path,dtype=np.uint8),cv2.IMREAD_GRAYSCALE))
         for path in (Path(__file__).parent/'assets'/'buffs').glob('ui_dead*.png'):
             image=cv2.imdecode(np.fromfile(path,dtype=np.uint8),cv2.IMREAD_COLOR)
             ink=word_ink(image);ys,xs=np.where(ink)

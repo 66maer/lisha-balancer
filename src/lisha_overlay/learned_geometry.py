@@ -73,5 +73,52 @@ def calibrated_bands(image,cells,*,return_evidence=False):
         old_left,old_top,right,bottom=bounds;left=lefts.get(cell.group,old_left);top=row_tops.get(cell.key,old_top)
         left=max(0,left);top=max(0,top);bottom=min(height,top+(bottom-old_top))
         result.append((image[top:bottom,left:right,:3],[left,top,right,bottom]))
-    if return_evidence:return result,side,len(widths),{'left_support':left_support,'row_keys':set(row_tops)}
+    if return_evidence:
+        return result, side, len(widths), {'left_support': left_support, 'row_keys': set(row_tops), 'rims': rims}
     return result,side,len(widths)
+
+
+def correct_clipped_band_top(bounds, cell, rims, side):
+    """Keep the first icon whole when its visible rim is above the cached crop."""
+    left, top, right, bottom = bounds
+    minimum_top = cell.rect.top() + cell.rect.height() * .38
+    # Only use a nearby, first-slot rim of the expected size. Other borders
+    # can belong to a second Buff or to a different part of the player tile.
+    supported = [y for x, y, width in rims
+                 if 0 <= x-left <= side//2 and abs(width-side) <= 2
+                 and y >= minimum_top and 3 <= top-y <= max(4, side//3)]
+    if not supported:
+        return bounds
+    corrected_top = max(supported) - 1
+    return [left, corrected_top, right, bottom - (top-corrected_top)]
+
+
+def fit_buff_band(bounds, cell, rims, side, image_height):
+    """Leave room for a measured first icon inside its own player tile."""
+    bounds = correct_clipped_band_top(bounds, cell, rims, side)
+    left, top, right, bottom = bounds
+    rect = cell.rect
+    first_slot = [rim for rim in rims if rect.left() <= rim[0] <= rect.left() + rect.height() * .24
+                  and abs(rim[0] - left) <= max(5, side//2)
+                  and (rim[1] >= rect.top() + rect.height() * .36
+                       or (rim[2] >= side + 3 and rim[1] + rim[2] >= rect.top() + rect.height() * .72))]
+    if not first_slot:
+        return bounds, None
+    x, y, width = min(first_slot, key=lambda rim: (abs(rim[0] - left), abs(rim[1] - top)))
+    if any(abs(other_x - x) <= 3 and (abs(other_y - y) > 2 or abs(other_w - width) > 2)
+           for other_x, other_y, other_w in first_slot):
+        return bounds, None
+    tile_bottom = min(image_height, round(rect.bottom()) + 1)
+    if y + width > tile_bottom:
+        return bounds, None
+
+    different_size = abs(width - side) >= 3
+    clipped = x < left or y < top or y + width > bottom
+    if not (different_size or clipped):
+        return bounds, None
+
+    padding = max(2, round(width * .08))
+    left = max(0, round(rect.left()), min(left, x - padding))
+    top = max(0, min(top, y - padding))
+    bottom = min(tile_bottom, max(bottom, y + width + padding))
+    return [left, top, right, bottom], (max(0, x-left-1), max(0, y-top-1), width)

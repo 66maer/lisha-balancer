@@ -7,9 +7,11 @@ import logging
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtGui import QImage
 
-from .live_strategy import evaluate_current as evaluate, evaluate_exact, prepare_live_strategy
+from .live_strategy import evaluate_simple_commands as evaluate, evaluate_exact_commands as evaluate_exact
 from .team_layout import TeamLayout
 from .cached_analysis import AnalysisCache
+from .analysis import ACTIONABLE_STATUSES, AnalysisResult
+from .encounter_timeline import EncounterTimeline, TimelineSample
 
 
 def _player_labels(keys):
@@ -24,6 +26,25 @@ def _player_labels(keys):
     return "、".join(labels)
 
 
+def _timeline_sample(players, diagnostics) -> TimelineSample | None:
+    if len(players) != 25 or len({p.player_key for p in players}) != 25 or any(
+        not diagnostics.get(p.player_key, {}).get('localized') for p in players
+    ):
+        return None
+    living = [p for p in players if p.alive]
+    definite = [p for p in living if not diagnostics[p.player_key].get('estimate_reasons')]
+    if any((p.color in ('red', 'black') and p.stacks in (1, 2, 3, 4, 5)) or p.isolated is True
+           for p in definite):
+        return 'active'
+    if any(p.color in ('red', 'black') and p.stacks in (1, 2, 3, 4, 5)
+           and not diagnostics[p.player_key].get('unverified_scene')
+           and not diagnostics[p.player_key].get('unverified_occlusion') for p in living):
+        return 'tentative'
+    if len(definite) == len(living) and all(p.color == 'none' and p.isolated is False for p in living):
+        return 'clean'
+    return None
+
+
 class AnalysisWorker(QObject):
     # Preserve Python dataclasses across the queued connection without
     # converting them through QVariantList/Map containers.
@@ -36,6 +57,27 @@ class AnalysisWorker(QObject):
         self._signature = None
         self._plan_cache = AnalysisCache()
         self._backend = backend
+        self._timeline = EncounterTimeline()
+        self._timeline_session = None
+        self._xinfa_reader = None
+        self._xinfa_scan = None
+        self._xinfa_request = None
+
+    def _sample_xinfa(self, image, metadata, request, layout):
+        try:
+            from .xinfa_recognition import RosterReader, RosterScan
+            if self._xinfa_reader is None:
+                self._xinfa_reader = RosterReader()
+            if request != self._xinfa_request or self._xinfa_scan is None:
+                self._xinfa_request = request
+                self._xinfa_scan = RosterScan()
+            seconds = metadata.get('captured_at') or time.time()
+            draft = self._xinfa_scan.observe(self._xinfa_reader, image, layout, seconds)
+            if draft is not None:
+                metadata.update(xinfa_request=request, xinfa_draft=draft)
+        except Exception as error:
+            logging.getLogger(__name__).exception('Roster recognition failed')
+            metadata.update(xinfa_request=request, xinfa_error=str(error))
 
     def _new_engine(self, layout, tank_key):
         from .vision import VisionEngine
@@ -50,7 +92,6 @@ class AnalysisWorker(QObject):
         self._engine = self._new_engine(TeamLayout.from_dict(layout), tank_key)
         self._signature = json.dumps([layout, tank_key], sort_keys=True)
         self._plan_cache.reset()
-        prepare_live_strategy()
 
     @Slot(QImage, dict, dict)
     def process(self, image, capture_metadata, config):
@@ -59,6 +100,11 @@ class AnalysisWorker(QObject):
                     'difficulty': config.get('difficulty', 'normal')}
         try:
             if QThread.currentThread().isInterruptionRequested():
+                return
+            if config.get('xinfa_only'):
+                metadata['xinfa_only'] = True
+                self._sample_xinfa(image, metadata, config['xinfa_request'], TeamLayout.from_dict(config['layout']))
+                self.completed.emit(None, [], metadata)
                 return
             import cv2
             cv2.setNumThreads(1)
@@ -75,28 +121,54 @@ class AnalysisWorker(QObject):
             planning_started = time.perf_counter()
             if QThread.currentThread().isInterruptionRequested():
                 return
+            request = config.get('xinfa_request')
+            if request is not None:
+                self._sample_xinfa(image, metadata, request, self._engine.layout)
+            diagnostics = getattr(self._engine, "diagnostics", {})
+            auto = config.get('auto_timeline')
+            sample = _timeline_sample(players, diagnostics) if auto else None
             overrides = config.get("overrides", {})
-            players = [replace(player, is_tank=False, **{key: value for key, value in overrides.get(player.player_key, {}).items()
+            roster = config.get('xinfa_roster', {})
+            players = [replace(player, is_tank=player.player_key == config.get('tank_key'),
+                               xinfa=roster.get(player.player_key),
+                               **{key: value for key, value in overrides.get(player.player_key, {}).items()
                                           if key in {"color", "stacks", "alive", "isolated"}})
                        for player in players]
-            evaluator = evaluate_exact if config.get('prefer_exact') else evaluate
-            result = self._plan_cache.evaluate(players, config["mode"], snapshot_stage=config.get("snapshot_stage", "before_tank"),
-                                               evaluator=evaluator, difficulty=config.get('difficulty', 'normal'))
-            metadata["planning_cache_hit"] = self._plan_cache.last_hit
+            mode = config['mode']
+            stage = config.get('snapshot_stage', 'after_tank') if mode != 'circle' else 'after_tank'
+            phase = None
+            if auto:
+                session = (config.get('timeline_session'), config['layout'])
+                if session != self._timeline_session:
+                    self._timeline = EncounterTimeline()
+                    self._timeline_session = session
+                phase = self._timeline.observe(metadata.get('captured_at'), sample)
+                mode, stage = phase.mode, phase.stage
+                metadata.update(timeline_phase=phase.key, timeline_label=phase.label,
+                                timeline_started_at=self._timeline.started_at)
+            metadata.update(effective_mode=mode, snapshot_stage=stage)
+            if mode is None:
+                result = AnalysisResult(phase.label, status='timeline_wait',
+                                        details='按团框变化估时，可随时点选手动模式。')
+                metadata['planning_cache_hit'] = False
+            else:
+                evaluator = evaluate_exact if config.get('prefer_exact') else evaluate
+                result = self._plan_cache.evaluate(players, mode, snapshot_stage=stage, evaluator=evaluator,
+                                                   difficulty=config.get('difficulty', 'normal'))
+                metadata['planning_cache_hit'] = self._plan_cache.last_hit
             confirmed = {p.player_key for p in players} if config.get("isolation_confirmed") else {
                 key for key, value in overrides.items() if "isolated" in value}
-            diagnostics = getattr(self._engine, "diagnostics", {})
             confirmed.update(key for key, item in diagnostics.items() if item.get("isolation_confirmed") is True)
             unconfirmed_isolation = [p.player_key for p in players if p.alive and p.player_key not in confirmed]
             reference_reasons = {}
             for player in players:
-                if not player.alive:
+                if not player.alive or (result.status == 'tank_warning' and not player.is_tank):
                     continue
                 detail = diagnostics.get(player.player_key, {})
                 reasons = list(detail.get('estimate_reasons', []))
                 if reasons:
                     reference_reasons[player.player_key] = reasons
-            if reference_reasons and result.status in ('solved', 'no_solution'):
+            if reference_reasons and result.status in ACTIONABLE_STATUSES:
                 result.reference = True
                 note = '按模型候选计算：' + _player_labels(reference_reasons)
                 result.warnings.append(note)
@@ -114,7 +186,8 @@ class AnalysisWorker(QObject):
             metadata['model_output_policy'] = 'best_current_prediction'
             metadata["diagnostics"] = diagnostics
             metadata["isolation_unconfirmed_keys"] = unconfirmed_isolation
-            metadata["reference_without_tank"] = False
+            metadata["reference_without_tank"] = bool(mode in ('all', 'fan') and stage == 'before_tank'
+                                                       and not config.get('tank_key'))
             metadata["warnings"] = list(result.warnings)
             metadata["processing_ms"] = (time.perf_counter() - started) * 1000
             metadata["planning_ms"] = (time.perf_counter() - planning_started) * 1000

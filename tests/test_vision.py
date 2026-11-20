@@ -8,6 +8,7 @@ import pytest
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QColor, QImage
 
+from lisha_overlay.learned_geometry import correct_clipped_band_top
 from lisha_overlay.team_layout import TeamLayout
 from lisha_overlay.vision import VisionEngine, _pixel_rect, _qimage_bgr, _read_image
 
@@ -34,6 +35,16 @@ def test_pixel_rect_clamps_to_image_and_preserves_fractional_edges():
     image = np.zeros((20, 30, 3), np.uint8)
     assert _pixel_rect(QRectF(-1.2, 1.2, 7.1, 4.2), image) == (0, 1, 6, 6)
     assert _pixel_rect(QRectF(28.2, 18.4, 10, 10), image) == (28, 18, 30, 20)
+
+
+def test_visible_first_icon_rim_can_repair_a_cached_crop_through_the_icon():
+    layout = TeamLayout.uniform((5,), left=0, top=0, right=0, bottom=0,
+                                column_gap=0, row_gap=0, footer=0)
+    cell = layout.cells(QRectF(6, 18, 640, 250))[9]
+    bounds = [140, 248, 266, 278]
+
+    assert correct_clipped_band_top(bounds, cell, [(143, 242, 22)], 22) == [140, 241, 266, 271]
+    assert correct_clipped_band_top(bounds, cell, [(170, 242, 22), (143, 234, 22)], 22) == bounds
 
 
 def test_image_loader_handles_unicode_paths_and_missing_files(tmp_path):
@@ -95,3 +106,18 @@ def test_death_text_fallback_and_its_cache_remain_available():
     assert first[0] is True
     assert engine._dead_player(image, cell) == first
     assert cell.key in engine._dead_cache
+
+
+def test_death_text_can_start_left_of_the_health_value_region():
+    layout = TeamLayout.uniform((5,), left=0, top=0, right=0, bottom=0,
+                                column_gap=0, row_gap=0, footer=0)
+    engine = VisionEngine(layout)
+    image = np.zeros((265, 600, 3), np.uint8)
+    cell = layout.cells(QRectF(0, 0, 600, 265))[0]
+    path = Path(__file__).resolve().parents[1] / 'src/lisha_overlay/assets/learned/death_word_video_mask.png'
+    mask = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_GRAYSCALE) > 0
+    height, width = mask.shape
+    image[23:23 + height, 38:38 + width][mask] = (130, 120, 220)
+    assert engine._dead_player(image, cell)[0]
+    image[:, :120] = 0
+    assert not engine._dead_player(image, cell)[0]

@@ -59,7 +59,11 @@ def test_advisory_isolation_keeps_learned_candidates_with_reference_marks(monkey
 @pytest.mark.parametrize("mode", ["all", "fan", "circle"])
 def test_current_snapshot_runs_all_modes_without_tank_notices(monkeypatch, mode):
     result, metadata = _run(monkeypatch, 12, 12, tank=False, auto_confirmed=True, mode=mode)
-    assert result.status == "solved" and result.balanced and result.annotations==[]
+    assert result.status == "solved" and result.balanced
+    assert [(mark.player_key, mark.order, mark.role) for mark in result.annotations] == [
+        (key, order, "center") for order, key in enumerate(result.plan.centers, 1)
+    ]
+    assert result.buff_instruction == "\n{黑1}×3 引导\n"
     assert result.plan.current_snapshot and not result.plan.reference_without_tank
     assert result.current_red==12 and result.current_black==12
     assert 'T' not in result.summary and not result.warnings

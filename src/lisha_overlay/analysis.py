@@ -16,6 +16,7 @@ from .solver import PlayerAction, SolverPlan, Stage, simulate_plan, solve
 AnalysisMode = Literal["all", "fan", "circle"]
 BuffColor = Literal["red", "black", "none", "unknown"]
 MODES = ("all", "fan", "circle")
+ACTIONABLE_STATUSES = ("solved", "no_solution", "tank_warning")
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +27,7 @@ class PlayerState:
     isolated: bool = False
     alive: bool = True
     is_tank: bool = False
+    xinfa: str | None = None
 
 
 @dataclass(slots=True)
@@ -46,6 +48,7 @@ class AnalysisResult:
     reference: bool = False
     strategy: dict = field(default_factory=dict)
     buff_counts: dict[str, int] | None = None
+    buff_instruction: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,7 +64,8 @@ def _mode(mode: str) -> AnalysisMode:
 
 def evaluate(players: Iterable[PlayerState], mode: AnalysisMode = "all", *,
              snapshot_stage: Stage = "before_tank", current_snapshot: bool = False,
-             current_strategy=None, tolerance: int = 2, avoid_overlap: bool = False) -> AnalysisResult:
+             current_strategy=None, tolerance: int = 2, avoid_overlap: bool = False,
+             prefer_exact: bool | None = None, plan_rank=None, guide_penalties=None) -> AnalysisResult:
     """Validate a complete snapshot, search the selected mode, and replay it.
 
     The default snapshot is immediately after 天坠 and before T's mandatory +3
@@ -131,21 +135,25 @@ def evaluate(players: Iterable[PlayerState], mode: AnalysisMode = "all", *,
         if result is not None:
             result.buff_counts = buff_counts
             return result
-    if (current_snapshot and abs(difference)<=tolerance and
+    if (current_snapshot and plan_rank is None and abs(difference)<=tolerance and
+            (not prefer_exact or difference == 0) and
             not any(p.alive and p.color in ('red','black') and p.stacks==5 for p in snapshot)):
         result = balanced_result(snapshot, mode, counts, red_count, black_count)
         result.buff_counts = buff_counts
         return result
     if current_snapshot:
-        if avoid_overlap or tolerance != 2:
-            found = solve(snapshot, mode, current_snapshot=True, tolerance=tolerance, avoid_overlap=avoid_overlap)
+        if avoid_overlap or tolerance != 2 or prefer_exact is not None or plan_rank is not None:
+            found = solve(snapshot, mode, current_snapshot=True, tolerance=tolerance,
+                          avoid_overlap=avoid_overlap, prefer_exact=prefer_exact,
+                          plan_rank=plan_rank, guide_penalties=guide_penalties)
         else:
             from .command_solver import solve_commands
             found=solve_commands(snapshot,mode)
     else:
         found = solve(snapshot, mode, snapshot_stage=snapshot_stage,
                       allow_missing_tank=reference_without_tank, current_snapshot=current_snapshot,
-                      tolerance=tolerance, avoid_overlap=avoid_overlap)
+                      tolerance=tolerance, avoid_overlap=avoid_overlap, prefer_exact=prefer_exact,
+                      plan_rank=plan_rank, guide_penalties=guide_penalties)
     if found.plan is None or found.simulation is None:
         return AnalysisResult(
             counts if current_snapshot else reference_prefix + "当前站位无解", status="no_solution",
@@ -264,9 +272,9 @@ def demo_result(mode: AnalysisMode = "all") -> AnalysisResult:
     annotations = [
         Annotation("g1p2", "fan", 1),
         Annotation("g4p3", "fan", 1),
-        Annotation("g1p4", "circle", 1),
-        Annotation("g2p3", "circle", 2),
-        Annotation("g5p2", "circle", 3),
+        PlanAnnotation("g1p4", "circle", 1, "center"),
+        PlanAnnotation("g2p3", "circle", 2, "center"),
+        PlanAnnotation("g5p2", "circle", 3, "center"),
     ]
     if mode != "all":
         annotations = [item for item in annotations if item.kind == mode]
@@ -277,6 +285,14 @@ def demo_result(mode: AnalysisMode = "all") -> AnalysisResult:
         details="测试区域与模拟标记；圈内 1、2、3 表示圈序，不是 Buff 层数或当前实战方案。",
         current_red=6, current_black=8,
         buff_counts={'red1': 6, 'black1': 8},
-        instruction=('测试 · {黑1} × 2 吃扇' if mode != 'circle' else '无需吃扇')
-                    + '\n测试 · {红1} × 3 引导圈\n无需蹭圈',
+        instruction='\n'.join((
+            '1队2号和4队3号吃扇' if mode != 'circle' else '',
+            '1队4号、2队3号、5队2号引导' if mode != 'fan' else '',
+            '',
+        )),
+        buff_instruction='\n'.join((
+            '{黑1}×2 吃扇' if mode != 'circle' else '',
+            '{红1}×3 引导' if mode != 'fan' else '',
+            '',
+        )),
     )

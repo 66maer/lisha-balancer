@@ -35,6 +35,30 @@ def test_no_scale_majority_can_select_none_when_its_model_score_is_largest():
     assert result['state']=='none' and result['confidence']==.95 and result['unverified_scale']
 
 
+@pytest.mark.parametrize('second,third,expected', [
+    ({}, {}, False),
+    ({'confidence': .60}, {}, True),
+    ({'body_colour_fraction': .03}, {}, True),
+    ({'selected_bbox': [26, 0, 22, 22]}, {}, True),
+    ({}, {'state': 'red_3'}, True),
+    ({}, {'state': 'black_2'}, True),
+    ({}, {'isolated': True}, True),
+])
+def test_scale_warning_distinguishes_a_missed_icon_from_conflicting_evidence(second, third, expected):
+    recognizer = LearnedRecognizer(scale_offsets=(-1, 0, 1))
+    first = dict(state='red_2', isolated=False, isolation_confirmed=True, icon_side=21,
+                 confidence=.843, body_colour_fraction=.55, selected_bbox=[4, 0, 21, 21])
+    second_read = {**first, 'icon_side': 22, 'confidence': .745, 'selected_bbox': [3, 0, 22, 22], **second}
+    third_read = {'state': 'none', 'isolated': False, 'isolation_confirmed': True,
+                  'icon_side': 23, 'confidence': .534, **third}
+
+    row = recognizer._combine_scales([first, second_read, third_read], 1)[0]
+
+    assert row['state'] == 'red_2'
+    assert row['scale_agreement'] == [2, 3]
+    assert row['unverified_scale'] is expected
+
+
 @pytest.mark.parametrize('menu', [False,True])
 def test_cursor_and_menu_evidence_do_not_erase_an_available_model_prediction(monkeypatch,menu):
     import lisha_overlay.learned_rois as rois
