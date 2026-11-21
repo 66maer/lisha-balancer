@@ -17,3 +17,12 @@ def test_red_damage_numbers_and_empty_bars_are_not_literal_death_text():
     cv2.putText(image,'123',(15,27),cv2.FONT_HERSHEY_SIMPLEX,.7,(130,120,220),2)
     assert not detector.match(image,64)[0]
     assert not detector.match(np.zeros_like(image),64)[0]
+
+
+def test_dim_resampled_death_word_keeps_its_shape_on_a_dark_cell():
+    path = Path(__file__).resolve().parents[1] / 'src/lisha_overlay/assets/learned/death_word_video_mask.png'
+    mask = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+    alpha = cv2.resize(mask, (28, 13), interpolation=cv2.INTER_AREA).astype(np.float32) / 255
+    image = np.full((34, 74, 3), 12, dtype=np.uint8)
+    image[9:22, 23:51] = 12 + alpha[:, :, None] * np.array([57, 62, 108])
+    assert DeathWordDetector().match(image, 53)[0]

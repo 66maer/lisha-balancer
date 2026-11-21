@@ -294,7 +294,7 @@ def solve(players: Sequence[PlayerState], mode: Mode = "all", *,
           fixed_centers: tuple[str,str,str] | None = None,
           tolerance: int = 2, avoid_overlap: bool = False,
           prefer_exact: bool | None = None, plan_rank=None,
-          guide_penalties: dict[str, int] | None = None) -> SearchResult:
+          guide_penalties: dict[str, int] | None = None, plan_variants=None) -> SearchResult:
     """Find a weak-settlement plan in O(players × difference × 4 × options).
 
     The DP tracks final red-minus-black count and up to three available
@@ -378,6 +378,7 @@ def solve(players: Sequence[PlayerState], mode: Mode = "all", *,
     if not candidates:
         return SearchResult(None, None, f"在当前模式允许的扇形与三圈站位内，未找到人数差不超过{tolerance}的方案。", explored)
     best = None
+    checked = set()
     for _score, path in sorted(candidates, key=lambda item: item[0]):
         eligible = [(index, player.player_key)
                     for index, (player, option) in enumerate(zip(players, path)) if option.hits == 1]
@@ -401,13 +402,20 @@ def solve(players: Sequence[PlayerState], mode: Mode = "all", *,
                           current_snapshot=current_snapshot,
                           command_style=preferred_actions is not None or plan_rank is not None,
                           spoken_policy=plan_rank is not None)  # type: ignore[arg-type]
-        simulation = simulate_plan(players, plan, tolerance=tolerance)
-        if simulation.valid:
+        variants = (plan,) if plan_variants is None else (plan, *plan_variants(plan))
+        for candidate in variants:
+            if candidate in checked:
+                continue
+            simulation = simulate_plan(players, candidate, tolerance=tolerance)
+            if not simulation.valid:
+                checked.add(candidate)
+                continue
             if plan_rank is None:
-                return SearchResult(plan, simulation, explored=explored)
-            rank = plan_rank(plan, simulation)
+                return SearchResult(candidate, simulation, explored=explored)
+            checked.add(candidate)
+            rank = plan_rank(candidate, simulation)
             if best is None or rank < best[0]:
-                best = rank, plan, simulation
+                best = rank, candidate, simulation
     if best is not None:
         return SearchResult(best[1], best[2], explored=explored)
     return SearchResult(None, None, "候选方案未通过完整技能顺序校验。", explored)

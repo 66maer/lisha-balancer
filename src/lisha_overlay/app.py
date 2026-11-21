@@ -199,6 +199,7 @@ class OverlayController(QObject):
         # Older profiles saved the former off default as if it were a choice.
         self.auto_timeline = self.settings.get('auto_stage_enabled', True) is not False
         self._timeline_session = 0
+        self._timeline_clear_session = None
         self.manual_overrides = {}
         self._xinfa_roster = {}
         self._xinfa_request = None
@@ -299,6 +300,7 @@ class OverlayController(QObject):
         self.panel.grid_requested.connect(lambda: self.locate_grid(prepare=True))
         self.panel.tank_requested.connect(self.select_tank)
         self.panel.timeline_toggled.connect(self.set_auto_timeline)
+        self.panel.round_clear_requested.connect(self.clear_auto_round)
         self.panel.set_auto_timeline(self.auto_timeline)
         self.panel.strategy_toggled.connect(self.set_exact_preference)
         self.panel.set_exact_preference(self.prefer_exact)
@@ -1051,6 +1053,25 @@ class OverlayController(QObject):
         if refresh and self._continuous_analysis:
             self.analyze_mode(self.analysis_mode)
 
+    def clear_auto_round(self):
+        metadata = getattr(self, '_analysis_metadata', {})
+        if (not self.auto_timeline or not self._continuous_analysis or self._quitting or self.test_enabled
+                or metadata.get('generation') != self._generation or not metadata.get('timeline_can_clear')):
+            return
+        self._timeline_session += 1
+        self._timeline_clear_session = self._timeline_session
+        self._invalidate_analysis(preserve_pending=True)
+        self._last_diagnostic_signature = None
+        self.manual_overrides.clear()
+        self.isolation_confirmed = False
+        self.panel.set_auto_timeline(True, '等待下一轮赤幽')
+        self.panel.set_mode(None)
+        waiting = AnalysisResult('等待下一轮赤幽', status='timeline_wait', details='已清本轮，继续自动识别。')
+        self.apply_analysis(waiting)
+        self.panel.set_status(waiting.details)
+        if self.remote_compatible and not self._processing_busy:
+            self._request_remote_frame()
+
     def set_manual_fan_stage(self, stage):
         self.snapshot_stage = stage
         self.set_auto_timeline(False, refresh=False)
@@ -1183,12 +1204,15 @@ class OverlayController(QObject):
         xinfa_only = request is not None and not getattr(self, '_continuous_analysis', False)
         if xinfa_only:
             self._xinfa_last_sample = time.monotonic()
+        timeline_session = getattr(self, '_timeline_session', 0)
         config = {"generation": self._generation, "layout": self.team_layout.to_dict(),
                   "tank_key": self.tank_key, "snapshot_stage": self.snapshot_stage,
                   "isolation_confirmed": self.isolation_confirmed,
                   "mode": self.analysis_mode,
                   'auto_timeline': getattr(self, 'auto_timeline', False),
-                  'timeline_session': getattr(self, '_timeline_session', 0),
+                  'timeline_session': timeline_session,
+                  'timeline_clear_from': timeline_session - 1
+                  if timeline_session == getattr(self, '_timeline_clear_session', None) else None,
                   'prefer_exact': getattr(self, 'prefer_exact', False),
                   'difficulty': getattr(self, 'difficulty', 'normal'),
                   'xinfa_request': request,
@@ -1218,7 +1242,8 @@ class OverlayController(QObject):
         plan_held = metadata.get('timeline_plan_held', False)
         if 'timeline_phase' in metadata:
             mode = metadata['effective_mode']
-            self.panel.set_auto_timeline(True, metadata['timeline_label'])
+            self.panel.set_auto_timeline(True, metadata['timeline_label'],
+                                         can_clear=metadata.get('timeline_can_clear', False))
             self.panel.set_mode(mode)
             mark_mode = result.plan.mode if plan_held else mode
             self.scan.set_analysis_mode(mark_mode or self.analysis_mode)
@@ -1629,9 +1654,10 @@ class OverlayController(QObject):
         if len(self._xinfa_roster) == len(cells):
             self.panel.set_status(f'准备就绪 · 心法{len(cells)}/{len(cells)}')
         else:
-            self._review_xinfa(region, unresolved_only=True, frame=frame)
+            self._review_xinfa(region, unresolved_only=True, frame=frame,
+                               candidates=metadata.get('xinfa_candidates'))
 
-    def _review_xinfa(self, region, *, unresolved_only=False, frame=None):
+    def _review_xinfa(self, region, *, unresolved_only=False, frame=None, candidates=None):
         if (self._quitting or self._dialog is not None or not self.grid_ready or region != self._region
                 or self._xinfa_request is not None):
             return
@@ -1639,7 +1665,7 @@ class OverlayController(QObject):
         layout = self.team_layout
         groups = [group.group for group in layout.groups]
         dialog = XinfaDialog(groups, self._xinfa_roster, self.panel, unresolved_only=unresolved_only,
-                             frame=frame, layout=layout)
+                             frame=frame, layout=layout, candidates=candidates)
         self._dialog = dialog
         dialog.show()
         exclude_from_capture(dialog)
@@ -1651,8 +1677,8 @@ class OverlayController(QObject):
             if accepted and self._continuous_analysis:
                 self.analyze_mode(self.analysis_mode)
             elif not self._continuous_analysis:
-                missing = len(groups) * 5 - len(self._xinfa_roster)
-                self.panel.set_status(f'心法待确认 · {missing} 格' if missing else '准备就绪 · 心法已确认')
+                complete = len(self._xinfa_roster) == len(groups) * 5
+                self.panel.set_status('准备就绪 · 心法已确认' if complete else '已忽略待确认心法')
         dialog.deleteLater()
 
     def open_preview(self):

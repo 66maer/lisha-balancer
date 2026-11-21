@@ -7,7 +7,7 @@ from .xinfa import catalogue
 
 
 class XinfaDialog(QDialog):
-    def __init__(self, groups, draft, parent=None, *, unresolved_only=False, frame=None, layout=None):
+    def __init__(self, groups, draft, parent=None, *, unresolved_only=False, frame=None, layout=None, candidates=None):
         super().__init__(parent)
         self.setWindowTitle('补认心法' if unresolved_only else '核对心法名单')
         self.setObjectName('xinfaDialog')
@@ -24,11 +24,12 @@ class XinfaDialog(QDialog):
             }
         """)
         content = QVBoxLayout(self)
-        content.addWidget(QLabel('请补认下面的格子。拿不准的可以留空。' if unresolved_only
+        content.addWidget(QLabel('请补齐所有待确认心法。候选按识别分数排序。' if unresolved_only
                                  else '核对或修改心法。换人或换位后请重新识别。'))
         grid = QGridLayout()
         self.slots = {}
         specs = catalogue()
+        candidates = candidates or {}
         entries = [(group, slot, f'g{group}p{slot}') for group in groups for slot in range(1, 6)]
         self.confirmed = {key: draft[key] for _, _, key in entries if draft.get(key) in specs}
         visible_entries = [(group, slot, key) for group, slot, key in entries
@@ -41,10 +42,14 @@ class XinfaDialog(QDialog):
         for index, (group, slot, key) in enumerate(visible_entries):
             combo = QComboBox()
             combo.setAccessibleName(f'{group}队{slot}号心法')
-            combo.addItem('待确认', None)
-            for code, spec in specs.items():
+            combo.setPlaceholderText('待确认')
+            ordered = dict.fromkeys((*candidates.get(key, ()), *specs))
+            for code in ordered:
+                if code not in specs:
+                    continue
+                spec = specs[code]
                 combo.addItem(spec.nickname if spec.nickname == spec.name else f'{spec.nickname} · {spec.name}', code)
-            combo.setCurrentIndex(max(0, combo.findData(self.confirmed.get(key))))
+            combo.setCurrentIndex(combo.findData(self.confirmed.get(key)))
             self.slots[key] = combo
             if unresolved_only:
                 row, column = divmod(index, columns)
@@ -65,11 +70,22 @@ class XinfaDialog(QDialog):
                 grid.addWidget(combo, slot, groups.index(group))
         content.addLayout(grid)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText('确认名单')
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('取消')
+        self.confirm_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.confirm_button.setText('确认名单')
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('忽略')
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         content.addWidget(buttons)
+        for combo in self.slots.values():
+            combo.currentIndexChanged.connect(self._update_confirmation)
+        self._update_confirmation()
+
+    def _update_confirmation(self):
+        self.confirm_button.setEnabled(all(combo.currentIndex() >= 0 for combo in self.slots.values()))
+
+    def accept(self):
+        if self.confirm_button.isEnabled():
+            super().accept()
 
     def roster(self):
         roster = {key: value for key, value in self.confirmed.items() if key not in self.slots}

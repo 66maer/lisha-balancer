@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from itertools import combinations, groupby
 
-from .solver import BuffState, receive_buff
+from .solver import BuffState, IllegalAction, PlayerAction, receive_buff
 from .xinfa import catalogue, guide_cost
 
 
@@ -13,6 +13,7 @@ class Call:
     text: str
     players: frozenset[str]
     effort: int
+    team_mentions: int = 0
 
 
 _MOVEMENT = {'fan': 1, 'guide': 1, 'single': 2, 'double': 5, 'triple': 9}
@@ -95,6 +96,106 @@ class CallPlanner:
         self.healing_schools = {spec.school for spec in specs.values() if spec.role == 'healer'}
         self.teams = {key: int(key[1]) for key in self.players}
         self._calls = {}
+        self._fan_calls = {}
+
+    def _scoped_fan_calls(self, initial, current_snapshot):
+        """Resolve team calls with an explicit exclusion for black stacks of three or more."""
+        signature = current_snapshot, tuple(sorted(initial.items()))
+        if signature in self._fan_calls:
+            return self._fan_calls[signature]
+        excluded = {key for key, state in initial.items() if state.value <= -3}
+        blocked = {key for key, state in initial.items() if state.isolated or state.value >= 4
+                   or (not current_snapshot and self.players[key].is_tank)}
+        by_team, by_name = defaultdict(set), defaultdict(set)
+        for key, team in self.teams.items():
+            by_team[team].add(key)
+            spec = self.specs.get(key)
+            if spec:
+                by_name[spec.nickname].add(key)
+        extras = {}
+        if all(self.specs.get(key) for key in self.players):
+            for name, keys in by_name.items():
+                if len(keys) == 1:
+                    key, = keys
+                    if key not in blocked | excluded:
+                        extras[key] = name
+        calls = {}
+
+        def add(keys, label, effort):
+            keys = frozenset(keys)
+            call = Call(label + '吃扇，三层及以上幽煞不吃', keys, effort)
+            if keys not in calls or _call_score((call,)) < _call_score((calls[keys],)):
+                calls[keys] = call
+
+        if excluded:
+            teams = sorted(by_team)
+            for count in range(2, len(teams) + 1):
+                for scope in combinations(teams, count):
+                    members = set().union(*(by_team[team] for team in scope))
+                    selected = members - excluded
+                    if not selected or selected & blocked or not members & excluded:
+                        continue
+                    consecutive = scope[-1] - scope[0] + 1 == len(scope)
+                    label = ('' if consecutive else '、').join(_CHINESE[team] for team in scope) + '队'
+                    effort = 2 if consecutive else 4
+                    add(selected, label, effort)
+                    for key in sorted(extras.keys() - members):
+                        add(selected | {key}, label + '和' + extras[key], effort + 1)
+        self._fan_calls[signature] = calls
+        return calls
+
+    def fan_variants(self, plan):
+        if plan.mode == 'circle':
+            return
+        initial, _ = _command_states(self.players.values(), plan)
+        original = {action.player_key for action in plan.actions if action.fan}
+        black_two = {key for key, state in initial.items() if state.value == -2} - original
+        if not black_two:
+            return
+        helpers = {action.player_key: action.circles for action in plan.actions
+                   if action.circles and action.player_key not in plan.centers}
+        scopes = [targets for targets in self._scoped_fan_calls(initial, plan.current_snapshot)
+                  if targets & black_two]
+        if not scopes:
+            return
+        fans = {key: receive_buff(initial[key], 'red').state for key in set().union(*scopes)}
+        spares = sorted(initial.keys() - helpers.keys() - set(plan.centers),
+                        key=lambda key: (guide_cost(self.players[key]), key))
+        for targets in scopes:
+            # The new fan list can also make a complete three-person Buff group
+            # available for guidance. Preserve the helpers' circle assignments.
+            after_fan = {key: fans[key] if key in targets else state
+                         for key, state in initial.items()}
+            by_buff = defaultdict(list)
+            for key, state in after_fan.items():
+                by_buff[state.value].append(key)
+            center_choices = [plan.centers]
+            center_choices.extend(tuple(sorted(keys)) for _, keys in sorted(by_buff.items())
+                                  if len(keys) == 3 and not helpers.keys() & set(keys))
+            changed_centers = set(plan.centers) & (original ^ targets)
+            if changed_centers:
+                # Try one substitute per headcount effect if the old guide's
+                # result may have changed. Prefer ranged and healers.
+                substitutes = {}
+                for key in spares:
+                    state = after_fan[key]
+                    try:
+                        event = receive_buff(state, 'black')
+                    except IllegalAction:
+                        continue
+                    if not event.strong:
+                        changes_count = event.applied and state.value in (0, 1)
+                        substitutes.setdefault(changes_count, key)
+                        if len(substitutes) == 2:
+                            break
+                center_choices.extend(tuple(spare if key == changed else key for key in plan.centers)
+                                      for changed in sorted(changed_centers) for spare in substitutes.values())
+            for centers in center_choices:
+                circles = {**helpers, **{key: (order,) for order, key in enumerate(centers, 1)}}
+                yield replace(plan, centers=centers, actions=tuple(
+                    PlayerAction(key, key in targets, circles.get(key, ()))
+                    for key in sorted(targets | circles.keys())
+                ))
 
     def groups(self, selected, states, eligible, *, nickname=None):
         selected = frozenset(selected)
@@ -109,9 +210,10 @@ class CallPlanner:
                 if spec and spec.school in self.healing_schools:
                     schools[spec.school][spec.nickname].add(key)
             split = {name: keys for hearts in schools.values() if len(hearts) > 1 for name, keys in hearts.items()}
-            if split:
-                other = selected.difference(*split.values())
-                calls = self.groups(other, states, eligible) + tuple(
+            # A nickname call must distinguish healing and damage specs.
+            # A full Buff group can address players from several schools.
+            if split and selected == frozenset().union(*split.values()):
+                calls = tuple(
                     call for name, keys in split.items()
                     for call in self.groups(keys, states, eligible, nickname=name)
                 )
@@ -119,13 +221,19 @@ class CallPlanner:
                 self._calls[signature] = result
                 return result
         choices = {}
+        named_choices = {}
 
-        def add(keys, text, effort):
+        def add(keys, text, effort, *, team_mentions=0, named=False):
             mask = frozenset(keys)
             if mask and mask <= selected:
+                call = Call(text, mask, effort, team_mentions)
                 prior = choices.get(mask)
-                if prior is None or (effort, len(text), text) < (prior.effort, len(prior.text), prior.text):
-                    choices[mask] = Call(text, mask, effort)
+                if prior is None or _call_score((call,)) < _call_score((prior,)):
+                    choices[mask] = call
+                if named:
+                    prior = named_choices.get(mask)
+                    if prior is None or _call_score((call,)) < _call_score((prior,)):
+                        named_choices[mask] = call
 
         by_buff, by_team, by_name = defaultdict(set), defaultdict(set), defaultdict(set)
         for key in sorted(eligible):
@@ -140,37 +248,46 @@ class CallPlanner:
             for value, members in by_buff.items():
                 add(members, _buff(value), 2 if len(members) == 1 else 1)
             for team, members in by_team.items():
-                add(members, f'{team}队', 2 if len(members) == 1 else 1)
+                add(members, f'{team}队', 2 if len(members) == 1 else 1, team_mentions=1)
                 for value, match in by_buff.items():
-                    add(members & match, f'{team}队{_buff(value)}', 2)
+                    add(members & match, f'{team}队{_buff(value)}', 2, team_mentions=1)
 
         all_known = all(self.specs.get(key) for key in eligible)
         known_teams = {team for team, members in by_team.items() if all(self.specs.get(key) for key in members)}
+        known_buffs = {value for value, members in by_buff.items() if all(self.specs.get(key) for key in members)}
         for name, members in by_name.items():
             if nickname is not None and name != nickname:
                 continue
             specificity = 0 if name in self.nicknames else 1
             if all_known:
-                if len(members) == 1:
-                    add(members, name, 1 + specificity)
-                else:
-                    add(members, _quantity(len(members)) + name, 2 + specificity)
-                for value, buff_members in by_buff.items():
-                    add(members & buff_members, _buff(value) + name, 3)
+                text = name if len(members) == 1 else _quantity(len(members)) + name
+                add(members, text, 1 + specificity, named=True)
+            for value in sorted(known_buffs):
+                add(members & by_buff[value], _buff(value) + name, 2 + specificity, named=True)
             scope = {team for team in known_teams if members & by_team[team] and (members & by_team[team]) <= selected}
-            for team in scope:
-                add(members & by_team[team], f'{team}队{name}', 1 + specificity)
+            for team in sorted(scope):
+                add(members & by_team[team], f'{team}队{name}', 1 + specificity, team_mentions=1)
             if len(scope) > 1:
                 scope_effort = 1 if len(scope) <= 3 else 2
                 add({key for key in members if self.teams[key] in scope}, _team_phrase(scope) + name,
-                    scope_effort + specificity)
+                    scope_effort + specificity, team_mentions=len(scope))
+
+        names = sorted(named_choices.values(), key=lambda call: (-len(call.players), *_call_score((call,))))
 
         @lru_cache(maxsize=None)
         def cover(remaining, budget):
             if not remaining:
                 return ()
-            # An explicit list also identifies every individual if no short exact selector exists.
-            best = (Call(_numbered(remaining) + (nickname or ''), remaining, 1 + 2 * len(remaining)),)
+            uncalled = remaining
+            fallback = []
+            for call in names:
+                if call.players <= uncalled:
+                    fallback.append(call)
+                    uncalled -= call.players
+            if uncalled:
+                fallback.append(Call(_numbered(uncalled) + (nickname or ''), uncalled, 1 + 2 * len(uncalled),
+                                     len({self.teams[key] for key in uncalled})))
+            best = tuple(fallback)
             if budget:
                 for keys, call in choices.items():
                     if keys <= remaining:
@@ -197,19 +314,34 @@ class CallPlanner:
         lines = defaultdict(list)
         groups = []
         effort = 0
+        team_mentions = 0
+        fan_call = None
         for kind, verb in _VERBS.items():
             if not targets[kind]:
                 continue
             calls = self.groups(targets[kind], initial if kind == 'fan' else after_fan, self.players)
-            address = '、'.join(call.text for call in calls)
-            lines[kind if kind in ('fan', 'guide') else 'circle'].append(address + verb)
+            line = '、'.join(call.text for call in calls) + verb
+            if kind == 'fan':
+                scoped = self._scoped_fan_calls(initial, plan.current_snapshot).get(frozenset(targets[kind]))
+                if scoped and _call_score((scoped,)) < _call_score(calls):
+                    calls = (scoped,)
+                    line = scoped.text
+                    fan_call = scoped
+            elif kind == 'guide' and fan_call and len(calls) == 1:
+                guide, = calls
+                if any(guide.text == _buff(after_fan[key].value) and initial[key].value != after_fan[key].value
+                       for key in guide.players):
+                    line = '扇后' + line
+            lines[kind if kind in ('fan', 'guide') else 'circle'].append(line)
             effort += sum(call.effort + _MOVEMENT[kind] for call in calls)
+            team_mentions += sum(call.team_mentions for call in calls)
             groups.extend(dict(action=kind, label=call.text, keys=sorted(call.players)) for call in calls)
         text = '\n'.join('，'.join(lines[key]) for key in ('fan', 'guide', 'circle'))
         moves = sum(guide_cost(self.players[key]) for key in centers)
         difficulty = sum(max(0, _MOVEMENT[kind] - 1) * len(targets[kind]) for kind in _MOVEMENT)
         excess = max(0, len(groups)-3)
-        return text, groups, (effort + moves + difficulty + 5 * excess, excess, difficulty, len(groups), moves,
+        total = effort + difficulty + 5 * excess + (moves if plan.mode == 'circle' else 0)
+        return text, groups, (total, excess, difficulty, len(groups), team_mentions, moves,
                               sum(len(group) for group in targets.values()))
 
     def refine(self, plan, rank):
@@ -237,4 +369,5 @@ class CallPlanner:
 
 
 def _call_score(groups):
-    return sum(call.effort for call in groups), len(groups), sum(len(call.text) for call in groups)
+    return (sum(call.effort for call in groups), len(groups), sum(call.team_mentions for call in groups),
+            sum(len(call.text) for call in groups))

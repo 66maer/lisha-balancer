@@ -290,6 +290,7 @@ def _spoken_result(players, mode, stage, tank_phase, exact, tolerance):
 
     result = evaluate(players, mode, snapshot_stage=stage, current_snapshot=not tank_phase,
                       tolerance=tolerance, avoid_overlap=True, prefer_exact=exact, plan_rank=rank,
+                      plan_variants=planner.fan_variants if mode != 'circle' else None,
                       guide_penalties={player.player_key: guide_cost(player) for player in players})
     if not tank_phase and mode != 'circle' and stage == 'before_tank' and result.status in ('solved', 'no_solution'):
         result.reference = True

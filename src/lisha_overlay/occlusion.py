@@ -38,20 +38,34 @@ class CursorOcclusionDetector:
             if overlap>=.73:found.append([int(x),int(y),int(w),int(h)])
         if found or self.rgb is None:return found
         # The fill can join a similar-coloured health bar. A masked appearance
-        # check includes its dark outline and ignores the covered background.
+        # check includes its dark outline. Check the shape inside each match
+        # as well, since a teal panel edge can match the masked colors alone.
         best=.10;box=None
         scales=sorted({1.,round(cell_height/64,2),round(cell_height/64*.9,2),round(cell_height/64*1.1,2)})
         for scale in scales:
             width=max(8,round(self.rgb.shape[1]*scale));height=max(10,round(self.rgb.shape[0]*scale));key=width,height
             if key not in self.scaled:
-                self.scaled[key]=(cv2.resize(self.rgb,(width,height)),cv2.resize(self.focus,(width,height),interpolation=cv2.INTER_NEAREST))
-            template,focus=self.scaled[key]
+                self.scaled[key] = (
+                    cv2.resize(self.rgb, (width, height)),
+                    cv2.resize(self.focus, (width, height), interpolation=cv2.INTER_NEAREST),
+                    cv2.resize(self.reference.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST) > 0,
+                )
+            template, focus, footprint = self.scaled[key]
             for left,top,right,bottom in regions:
                 if right-left<width or bottom-top<height:continue
                 scores=cv2.matchTemplate(image[top:bottom,left:right,:3],template,cv2.TM_SQDIFF_NORMED,mask=focus)
-                scores=np.nan_to_num(scores,nan=1.,posinf=1.,neginf=1.)
-                value,_,location,_=cv2.minMaxLoc(scores)
-                if value<best:best=value;box=[left+location[0],top+location[1],width,height]
+                rows, columns = np.where(np.isfinite(scores) & (scores < best))
+                for row, column in zip(rows, columns):
+                    value = float(scores[row, column])
+                    if value >= best:
+                        continue
+                    x, y = left + int(column), top + int(row)
+                    shape = mask[y:y+height, x:x+width] > 0
+                    intersection = np.count_nonzero(shape & footprint)
+                    union = np.count_nonzero(shape | footprint)
+                    if intersection >= .45 * union:
+                        best = value
+                        box = [x, y, width, height]
         return [box] if box is not None else []
 
 

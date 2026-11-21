@@ -112,17 +112,19 @@ def decide(frames, classes):
     for key in frames[0]:
         visible = [frame[key] for frame in frames if frame[key] is not None]
         if not visible:
-            result[key] = dict(result=None, top=None, votes=0, available=0, per_frame=[])
+            result[key] = dict(result=None, top=None, votes=0, available=0, per_frame=[], candidates=())
             continue
         series = np.stack(visible)
         rank = np.argsort(-series, axis=1)
         votes = Counter(int(order[0]) for order, row in zip(rank, series)
                         if row[order[0]] >= .54 and row[order[0]] - row[order[1]] >= .18)
-        strongest = int(np.argmax(np.median(series, axis=0)))
+        ranked = np.argsort(-np.median(series, axis=0), kind='stable')
+        strongest = int(ranked[0])
         runnerup_votes = max((count for candidate, count in votes.items() if candidate != strongest), default=0)
         agreed = votes[strongest] >= RECURRENCE and votes[strongest] > runnerup_votes
         result[key] = dict(result=classes[strongest] if agreed else None, top=classes[strongest],
                            votes=votes[strongest], available=len(series),
+                           candidates=tuple(classes[index] for index in ranked),
                            per_frame=[(classes[order[0]], float(row[order[0]])) for order, row in zip(rank, series)])
     return result
 
@@ -196,6 +198,7 @@ class RosterScan:
         self.frames = []
         self.artwork = []
         self.result = None
+        self.candidates = {}
 
     def observe(self, reader, frame, layout, seconds):
         if self.result is not None:
@@ -213,4 +216,6 @@ class RosterScan:
         verified = {key: row['result'] for key, row in result.items() if row['result'] is not None}
         if len(self.frames) >= 7 or seconds - self.started >= 3.0 or (len(self.frames) >= 3 and len(verified) == 25):
             self.result = verified
+            self.candidates = {key: row['candidates'] for key, row in result.items()
+                               if row['result'] is None and row['candidates']}
         return self.result

@@ -214,6 +214,9 @@ class LearnedRecognizer:
             )
             selected['scale_missed_in_one_view'] = missed_in_one_view
             selected['unverified_scale'] = votes < len(variants) and not missed_in_one_view
+            selected['unverified_buff_scale'] = (
+                not missed_in_one_view and len({row['state'] for row in variants}) > 1
+            )
             combined.append(selected)
         return combined
 

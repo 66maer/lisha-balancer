@@ -164,6 +164,80 @@ def test_auto_settlement_updates_actual_buffs_and_keeps_plan_until_clear(control
     assert not c.scan.markers.displayed_annotations()
 
 
+def test_clear_round_button_keeps_automatic_analysis_and_discards_old_results(controller):
+    from lisha_overlay.analysis import AnalysisResult
+    from lisha_overlay.team_layout import Annotation
+
+    c = controller
+    c._continuous_analysis = True
+    c.tank_key = 'g5p2'
+    c._xinfa_roster = {'g5p1': 'tielao'}
+    old = dict(generation=c._generation, effective_mode=None, timeline_phase='settling',
+               timeline_label='结算统计', timeline_started_at=1., timeline_can_clear=True)
+    result = AnalysisResult('上一轮', status='timeline_wait', instruction='1队吃扇',
+                            annotations=[Annotation('g1p1', 'fan')])
+    c._analysis_completed(result, [], old)
+    assert not c.panel.clear_round_button.isHidden()
+    assert c.scan.markers.displayed_annotations()
+    c.panel.clear_round_button.click()
+    assert c.panel.clear_round_button.isHidden()
+    assert c._continuous_analysis and c.auto_timeline and c._analysis_pending
+    assert c.tank_key == 'g5p2' and c._xinfa_roster == {'g5p1': 'tielao'}
+    assert c._generation == old['generation'] + 1
+    c._analysis_completed(result, [], old)
+    assert c.panel.clear_round_button.isHidden()
+    assert not c.panel._instruction_label.text() and not c.scan.markers.displayed_annotations()
+
+
+@pytest.mark.parametrize('ignore', (False, True))
+def test_xinfa_review_sorts_candidates_and_only_saves_complete_roster(controller, monkeypatch, ignore):
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QDialog, QDialogButtonBox
+    from lisha_overlay.xinfa import catalogue
+    from lisha_overlay.xinfa_dialog import XinfaDialog
+
+    c = controller
+    c.grid_ready = True
+    c._xinfa_request = 1
+    frame = QImage(500, 400, QImage.Format.Format_RGB32)
+    frame.fill(Qt.GlobalColor.black)
+    keys = [cell.key for cell in c.team_layout.cells(frame.size())]
+    missing = ('g1p1', 'g1p2', 'g1p3')
+    verified = {key: 'huajian' for key in keys if key not in missing}
+    candidates = {'g1p1': ('youluo', 'binxin'), 'g1p2': ('xiangzhi', 'mingzun')}
+
+    def review(dialog):
+        assert set(dialog.slots) == set(missing)
+        assert all(combo.currentIndex() == -1 for combo in dialog.slots.values())
+        for key, codes in candidates.items():
+            combo = dialog.slots[key]
+            assert tuple(combo.itemData(index) for index in range(len(codes))) == codes
+        first_without_scores = dialog.slots['g1p3'].itemData(0)
+        assert first_without_scores == next(iter(catalogue()))
+        buttons = dialog.findChild(QDialogButtonBox)
+        dismiss = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        assert dismiss.text() == '忽略' and dialog.confirm_button.text() == '确认名单'
+        dialog.slots['g1p1'].setCurrentIndex(0)
+        assert not dialog.confirm_button.isEnabled()
+        dialog.accept()
+        assert dialog.result() == QDialog.DialogCode.Rejected
+        if ignore:
+            dismiss.click()
+        else:
+            for key in missing[1:]:
+                dialog.slots[key].setCurrentIndex(0)
+            assert dialog.confirm_button.isEnabled()
+            dialog.confirm_button.click()
+        return dialog.result()
+
+    monkeypatch.setattr(XinfaDialog, 'exec', review)
+    c._apply_xinfa_scan(1, dict(c._region), frame,
+                       {'generation': c._generation, 'xinfa_draft': verified, 'xinfa_candidates': candidates})
+    expected = verified if ignore else {**verified, 'g1p1': 'youluo', 'g1p2': 'xiangzhi',
+                                       'g1p3': next(iter(catalogue()))}
+    assert c._xinfa_roster == expected
+
+
 def test_difficulty_button_replans_persists_and_invalidates_inflight_results(controller):
     from lisha_overlay.live_strategy import evaluate_current as live_evaluate
     c = controller

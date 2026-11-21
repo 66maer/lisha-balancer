@@ -73,7 +73,8 @@ def _mode(mode: str) -> AnalysisMode:
 def evaluate(players: Iterable[PlayerState], mode: AnalysisMode = "all", *,
              snapshot_stage: Stage = "before_tank", current_snapshot: bool = False,
              current_strategy=None, tolerance: int = 2, avoid_overlap: bool = False,
-             prefer_exact: bool | None = None, plan_rank=None, guide_penalties=None) -> AnalysisResult:
+             prefer_exact: bool | None = None, plan_rank=None, guide_penalties=None,
+             plan_variants=None) -> AnalysisResult:
     """Validate a complete snapshot, search the selected mode, and replay it.
 
     The default snapshot is immediately after 天坠 and before T's mandatory +3
@@ -148,7 +149,7 @@ def evaluate(players: Iterable[PlayerState], mode: AnalysisMode = "all", *,
         if avoid_overlap or tolerance != 2 or prefer_exact is not None or plan_rank is not None:
             found = solve(snapshot, mode, current_snapshot=True, tolerance=tolerance,
                           avoid_overlap=avoid_overlap, prefer_exact=prefer_exact,
-                          plan_rank=plan_rank, guide_penalties=guide_penalties)
+                          plan_rank=plan_rank, guide_penalties=guide_penalties, plan_variants=plan_variants)
         else:
             from .command_solver import solve_commands
             found=solve_commands(snapshot,mode)
@@ -156,7 +157,7 @@ def evaluate(players: Iterable[PlayerState], mode: AnalysisMode = "all", *,
         found = solve(snapshot, mode, snapshot_stage=snapshot_stage,
                       allow_missing_tank=reference_without_tank, current_snapshot=current_snapshot,
                       tolerance=tolerance, avoid_overlap=avoid_overlap, prefer_exact=prefer_exact,
-                      plan_rank=plan_rank, guide_penalties=guide_penalties)
+                      plan_rank=plan_rank, guide_penalties=guide_penalties, plan_variants=plan_variants)
     if found.plan is None or found.simulation is None:
         return AnalysisResult(
             counts if current_snapshot else reference_prefix + "当前站位无解", status="no_solution",

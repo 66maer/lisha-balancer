@@ -1,4 +1,5 @@
 """Estimate the live planning phase from timestamped team snapshots."""
+from collections.abc import Mapping
 from dataclasses import dataclass
 from math import isfinite
 from typing import Literal
@@ -32,7 +33,9 @@ ONE_CAST = 41.8
 ONE_HIT = 43.8
 FAN_HIT = 46.7
 CIRCLE_HITS = (61.2, 62.7, 64.3)
-SETTLEMENT = 77.5
+# Estimate when the stacks disappear, starting from the first visible stacks.
+SETTLEMENT = 82.0
+MANUAL_CLEAR_DELAY = 3.0
 MARGIN = 1.0
 MAX_FRAME_GAP = 3.0
 ONSET_CONFIRMATION_WINDOW = 4.0
@@ -47,22 +50,48 @@ class EncounterTimeline:
         self.started_at: float | None = None
         self.last_frame_at: float | None = None
         self.armed = False
+        self._settlement_confirmed = False
         self._clean_frames = 0
         self._last_clean_at: float | None = None
         self._clean_since: float | None = None
         self._candidate_at: float | None = None
         self._active_frames = 0
+        self._last_buffs: dict[str, int] = {}
+        self._cleared_buffs: dict[str, int] | None = None
+        self._new_holders: set[str] = set()
 
-    def observe(self, seconds: float, sample: TimelineSample | None) -> Phase:
+    @property
+    def can_clear_round(self) -> bool:
+        return (self.started_at is not None and self.last_frame_at is not None
+                and self._clean_frames == 0
+                and self.last_frame_at - self.started_at >= SETTLEMENT + MANUAL_CLEAR_DELAY)
+
+    def clear_round(self) -> None:
+        """Keep the last readable stacks so an old icon cannot immediately start a new round."""
+        baseline = self._last_buffs.copy()
+        self.reset()
+        self._cleared_buffs = baseline
+
+    def observe(self, seconds: float, sample: TimelineSample | None,
+                buffs: Mapping[str, int] | None = None) -> Phase:
         if isinstance(seconds, bool) or not isinstance(seconds, (float, int)) or not isfinite(seconds):
             return SYNCING
         if self.last_frame_at is not None:
             gap = seconds - self.last_frame_at
-            if gap < 0 or gap > MAX_FRAME_GAP:
+            if gap < 0:
                 self.reset()
+            elif gap > MAX_FRAME_GAP:
+                if self._cleared_buffs is None and self.phase(self.last_frame_at) != SETTLING:
+                    self.reset()
+                else:
+                    self._clean_frames = 0
+                    self._clean_since = None
+                    self._new_holders.clear()
             elif gap == 0:
                 return self.phase(seconds)
         self.last_frame_at = seconds
+        if buffs is not None:
+            self._last_buffs.update(buffs)
 
         self._clean_frames = self._clean_frames + 1 if sample == 'clean' else 0
         if sample == 'clean':
@@ -71,18 +100,37 @@ class EncounterTimeline:
                 self._clean_since = seconds
         else:
             self._clean_since = None
+        if self._cleared_buffs is not None:
+            if self._clean_frames >= 2:
+                self._cleared_buffs = None
+                self.armed = self._settlement_confirmed = True
+                self._candidate_at = None
+            else:
+                new_holders = set()
+                for key, value in (buffs or {}).items():
+                    previous = self._cleared_buffs.get(key)
+                    if value and (previous is None or value * previous <= 0 or abs(value) > abs(previous)):
+                        new_holders.add(key)
+                if new_holders & self._new_holders:
+                    self.started_at = self._candidate_at
+                    self._cleared_buffs = None
+                    self._candidate_at = None
+                else:
+                    self._candidate_at = seconds if new_holders else None
+                self._new_holders = new_holders
+            return self.phase(seconds)
         if self.started_at is not None:
-            if self._clean_frames >= 2 and (seconds - self.started_at >= SETTLEMENT - MARGIN
+            if self._clean_frames >= 2 and (self.phase(seconds) == SETTLING
                                            or seconds - self._clean_since >= 2.0):
                 self.started_at = None
-                self.armed = True
+                self.armed = self._settlement_confirmed = True
             return self.phase(seconds)
 
         if self.armed:
-            if self._candidate_at is None:
+            if self._candidate_at is None and not self._settlement_confirmed:
                 self.armed = seconds - self._last_clean_at <= MAX_FRAME_GAP
-            elif seconds - self._candidate_at > ONSET_CONFIRMATION_WINDOW:
-                self.armed = False
+            elif self._candidate_at is not None and seconds - self._candidate_at > ONSET_CONFIRMATION_WINDOW:
+                self.armed = self._settlement_confirmed
                 self._candidate_at = None
                 self._active_frames = 0
         if sample in ('active', 'tentative') and self.armed:
@@ -91,6 +139,7 @@ class EncounterTimeline:
             self._active_frames += int(sample == 'active')
             if self._active_frames >= 2:
                 self.started_at = self._candidate_at
+                self._settlement_confirmed = False
                 self._candidate_at = None
                 self._active_frames = 0
         elif sample == 'clean':
@@ -102,7 +151,7 @@ class EncounterTimeline:
 
     def phase(self, seconds: float) -> Phase:
         if self.started_at is None:
-            return WAITING if self.armed else SYNCING
+            return WAITING if self.armed or self._cleared_buffs is not None else SYNCING
         elapsed = seconds - self.started_at
         if elapsed < ONE_CAST - MARGIN:
             return BEFORE_TANK

@@ -4,8 +4,9 @@ from PySide6.QtGui import QImage
 
 from lisha_overlay.analysis import PlayerState
 from lisha_overlay.encounter_timeline import AFTER_FAN, AFTER_TANK, BEFORE_TANK, SETTLING, TANK_CAST, EncounterTimeline
+from lisha_overlay.encounter_timeline import MANUAL_CLEAR_DELAY, SETTLEMENT
 from lisha_overlay.live_strategy import evaluate_current, evaluate_exact
-from lisha_overlay.processing import AnalysisWorker
+from lisha_overlay.processing import AnalysisWorker, _timeline_evidence
 from lisha_overlay.solver import simulate_plan
 from lisha_overlay.team_layout import TeamLayout
 
@@ -31,6 +32,89 @@ def test_timeline_accepts_an_onset_only_after_a_clean_panel_and_resyncs_after_a_
     assert timeline.observe(4.5, 'clean').key == 'before_tank'
     assert timeline.observe(8, 'active').key == 'syncing'
     assert timeline.started_at is None
+
+
+def test_only_red_and_black_evidence_can_start_or_hold_a_round():
+    players = [replace(p, color='none', stacks=0, isolated=True) for p in _roster()]
+    flags = {p.player_key: {'localized': True} for p in players}
+    flags['g1p1'].update(unverified_scale=True, unverified_buff_scale=False,
+                        unverified_isolation=True, estimate_reasons=['隔绝图案证据不足'])
+    assert _timeline_evidence(players, flags)[0] == 'clean'
+    flags['g1p1']['unverified_buff_scale'] = True
+    assert _timeline_evidence(players, flags)[0] is None
+    flags['g1p1']['unverified_buff_scale'] = False
+    flags['g1p1']['unverified_occlusion'] = True
+    assert _timeline_evidence(players, flags)[0] is None
+    colored = [players[0], replace(players[1], color='black', stacks=1), *players[2:]]
+    assert _timeline_evidence(colored, flags)[0] == 'active'
+
+
+def test_late_normal_settlement_clears_automatically_and_survives_unreadable_frames():
+    timeline = EncounterTimeline()
+    timeline.started_at = 80.
+    for seconds, sample in ((158, 'active'), (161, 'active'), (162, None), (163, 'clean'), (164, 'clean')):
+        phase = timeline.observe(seconds, sample)
+        assert not timeline.can_clear_round
+    assert phase.key == 'waiting' and timeline.started_at is None
+    for seconds in range(165, 182):
+        assert timeline.observe(seconds, None).key == 'waiting'
+    assert timeline.observe(182, 'active').key == 'waiting'
+    assert timeline.observe(183, 'active').key == 'before_tank'
+    assert timeline.started_at == 182
+
+
+def test_first_clear_frame_hides_the_fallback_even_after_the_deadline():
+    timeline = EncounterTimeline()
+    timeline.started_at = 0.
+    deadline = SETTLEMENT + MANUAL_CLEAR_DELAY
+    timeline.observe(deadline, 'active')
+    assert timeline.can_clear_round
+    assert timeline.observe(deadline + .5, 'clean') == SETTLING
+    assert not timeline.can_clear_round
+    assert timeline.observe(deadline + 1, 'clean').key == 'waiting'
+    assert not timeline.can_clear_round
+
+
+def test_worker_manual_clear_waits_for_new_red_or_black_without_a_clean_panel():
+    snapshot = [replace(p, color='none', stacks=0) for p in _roster()]
+    snapshot[0] = replace(snapshot[0], color='black', stacks=2, isolated=True)
+
+    class Vision:
+        diagnostics = {p.player_key: {'localized': True} for p in snapshot}
+
+        def analyze(self, image):
+            return snapshot
+
+    worker = AnalysisWorker()
+    worker._new_engine = lambda *_: Vision()
+    results = []
+    errors = []
+    worker.completed.connect(lambda result, players, data: results.append((result, data)))
+    worker.failed.connect(lambda error, data: errors.append(error))
+    config = dict(generation=1, layout=TeamLayout().to_dict(), mode='all',
+                  tank_key='g1p1', auto_timeline=True, timeline_session=1)
+
+    def process(seconds):
+        worker.process(QImage(), {'captured_at': seconds}, config)
+        assert not errors
+        return results[-1]
+
+    deadline = SETTLEMENT + MANUAL_CLEAR_DELAY
+    process(deadline - 2.5)
+    worker._timeline.started_at = 0.
+    assert not process(deadline - .5)[1]['timeline_can_clear']
+    assert process(deadline)[1]['timeline_can_clear']
+    config.update(generation=2, timeline_session=2, timeline_clear_from=1)
+    result, data = process(deadline + .5)
+    assert data['timeline_phase'] == 'waiting' and not data['timeline_can_clear']
+    assert result.plan is None and not result.annotations
+    snapshot[0] = replace(snapshot[0], stacks=1)
+    assert process(deadline + 1.5)[1]['timeline_phase'] == 'waiting'
+    assert process(deadline + 6.5)[1]['timeline_phase'] == 'waiting'
+    snapshot[1] = replace(snapshot[1], color='red', stacks=1)
+    assert process(deadline + 7)[1]['timeline_phase'] == 'waiting'
+    _, data = process(deadline + 7.5)
+    assert data['timeline_phase'] == 'before_tank' and data['timeline_started_at'] == deadline + 7
 
 
 def _observed(players, states):
@@ -63,6 +147,7 @@ def test_worker_keeps_one_plan_through_casts_and_rearms_after_settlement():
     worker.failed.connect(lambda error, metadata: errors.append(error))
     active = players
     clean = [replace(p, color='none', stacks=0) for p in players]
+    clean_with_isolation = [replace(clean[0], isolated=True), *clean[1:]]
     settled = [
         replace(p, color='red', stacks=1 + i % 4) if i < 10 else
         replace(p, color='black', stacks=1 + i % 3) if i < 20 else p
@@ -79,7 +164,7 @@ def test_worker_keeps_one_plan_through_casts_and_rearms_after_settlement():
     trace = None
     for half_second in range(162):
         seconds = half_second * .5
-        players = clean if seconds < 1.5 or 78.5 <= seconds < 80 else active
+        players = clean if seconds < 1.5 else clean_with_isolation if 78.5 <= seconds < 80 else active
         if 46 <= seconds < 48.5:
             players = _observed(active, trace.stage_states['after_tank'])
         elif 48.5 <= seconds < 67:
@@ -139,6 +224,25 @@ def test_auto_cast_and_settlement_report_counts_even_when_no_plan_was_built():
         assert (result.current_red, result.current_black) == (13, 12)
         assert result.buff_counts == {'red1': 13, 'black2': 12}
         assert result.plan is None
+
+
+def test_auto_reassigns_when_a_marked_player_is_confirmed_dead():
+    players = _roster()
+    worker = AnalysisWorker()
+    worker._timeline.started_at = 1.
+    config = {'generation': 1, 'prefer_exact': False}
+    diagnostics = {p.player_key: {'localized': True} for p in players}
+    initial = worker._auto_result(BEFORE_TANK, players, diagnostics, config,
+                                  {'difficulty': 'normal', 'captured_at': 2.})
+    key = next(action.player_key for action in initial.plan.actions if action.player_key != 'g1p1')
+    changed = [replace(p, color='none', stacks=0, alive=False) if p.player_key == key else p for p in players]
+
+    metadata = {'difficulty': 'normal', 'captured_at': 2.5}
+    result = worker._auto_result(BEFORE_TANK, changed, diagnostics, config, metadata)
+    assert not metadata.get('timeline_plan_held')
+    assert result.plan is not None and simulate_plan(changed, result.plan).valid
+    assert all(action.player_key != key for action in result.plan.actions)
+    assert all(annotation.player_key != key for annotation in result.annotations)
 
 
 def test_auto_replans_only_after_two_readable_frames_disagree_at_a_checkpoint(monkeypatch):

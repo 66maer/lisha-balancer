@@ -30,3 +30,13 @@ def test_masked_cursor_still_matches_when_its_fill_joins_a_health_bar():
     cv2.line(image,(27+int(xs[index]),32+int(ys[index])),(85,32+int(ys[index])),(160,210,130),1)
     found=CursorOcclusionDetector().find(image,65)
     assert found and any(intersects([25,30,25+w,30+h],box) for box in found)
+
+
+def test_teal_team_panel_edge_does_not_match_the_cursor_appearance_fallback():
+    image = np.full((90, 120, 3), (52, 56, 37), dtype=np.uint8)
+    image[14:71, 8:86] = (155, 174, 117)
+    image[14:71, 86:88] = (120, 120, 105)
+    image[28:39, 72:79] = (52, 56, 37)
+    image[27:34, 63:72] = (52, 56, 37)
+    image[71:77, 8:86] = (150, 134, 98)
+    assert CursorOcclusionDetector().find(image, 52.6) == []

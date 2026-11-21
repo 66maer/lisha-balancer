@@ -29,23 +29,35 @@ def _player_labels(keys):
     return "、".join(labels)
 
 
-def _timeline_sample(players, diagnostics) -> TimelineSample | None:
+def _timeline_evidence(players, diagnostics) -> tuple[TimelineSample | None, dict[str, int]]:
+    """Only red and black stacks drive the encounter clock."""
     if len(players) != 25 or len({p.player_key for p in players}) != 25 or any(
         not diagnostics.get(p.player_key, {}).get('localized') for p in players
     ):
-        return None
-    living = [p for p in players if p.alive]
-    definite = [p for p in living if not diagnostics[p.player_key].get('estimate_reasons')]
-    if any((p.color in ('red', 'black') and p.stacks in (1, 2, 3, 4, 5)) or p.isolated is True
-           for p in definite):
-        return 'active'
-    if any(p.color in ('red', 'black') and p.stacks in (1, 2, 3, 4, 5)
-           and not diagnostics[p.player_key].get('unverified_scene')
-           and not diagnostics[p.player_key].get('unverified_occlusion') for p in living):
-        return 'tentative'
-    if len(definite) == len(living) and all(p.color == 'none' and p.isolated is False for p in living):
-        return 'clean'
-    return None
+        return None, {}
+    buffs = {}
+    tentative = False
+    for player in players:
+        detail = diagnostics[player.player_key]
+        if detail.get('unverified_scene') or detail.get('unverified_occlusion'):
+            continue
+        if not player.alive:
+            buffs[player.player_key] = 0
+            continue
+        layers = player.stacks
+        active = player.color in ('red', 'black') and type(layers) is int and 1 <= layers <= 5
+        if detail.get('unverified_body') or detail.get('unverified_buff_scale', detail.get('unverified_scale')):
+            tentative |= active
+            continue
+        if active:
+            buffs[player.player_key] = -layers if player.color == 'black' else layers
+        elif player.color == 'none' and (layers is None or (type(layers) is int and layers == 0)):
+            buffs[player.player_key] = 0
+    if any(buffs.values()):
+        return 'active', buffs
+    if tentative:
+        return 'tentative', buffs
+    return ('clean' if len(buffs) == len(players) else None), buffs
 
 
 def _observed_buffs(players, diagnostics):
@@ -111,7 +123,7 @@ class AnalysisWorker(QObject):
             seconds = metadata.get('captured_at') or time.time()
             draft = self._xinfa_scan.observe(self._xinfa_reader, image, layout, seconds)
             if draft is not None:
-                metadata.update(xinfa_request=request, xinfa_draft=draft)
+                metadata.update(xinfa_request=request, xinfa_draft=draft, xinfa_candidates=self._xinfa_scan.candidates)
         except Exception as error:
             logging.getLogger(__name__).exception('Roster recognition failed')
             metadata.update(xinfa_request=request, xinfa_error=str(error))
@@ -140,6 +152,16 @@ class AnalysisWorker(QObject):
             self._round_mismatch = None
         observed = _observed_buffs(players, diagnostics)
         if self._round_result is not None:
+            planned = {action.player_key for action in self._round_result.plan.actions
+                       if action.circles or (phase.mode != 'circle' and action.fan)}
+            if phase.mode == 'all':
+                planned.update(player.player_key for player in players if player.is_tank)
+            lost_player = phase.mode is not None and any(
+                not player.alive and player.player_key in planned
+                and diagnostics.get(player.player_key, {}).get('localized')
+                and not diagnostics[player.player_key].get('unverified_scene')
+                for player in players
+            )
             expected = self._round_states.get(phase.key)
             changed = ()
             if expected is not None and observed is not None and expected.keys() == observed.keys():
@@ -151,7 +173,7 @@ class AnalysisWorker(QObject):
             failed = bool(changed and self._round_mismatch is not None
                           and self._round_mismatch[0] == key and self._round_mismatch[1] != instant)
             self._round_mismatch = (key, instant) if changed else None
-            if not failed:
+            if not failed and not lost_player:
                 if observed is not None:
                     _update_observed_counts(self._round_result, players)
                 held = deepcopy(self._round_result)
@@ -215,7 +237,7 @@ class AnalysisWorker(QObject):
                 self._sample_xinfa(image, metadata, request, self._engine.layout)
             diagnostics = getattr(self._engine, "diagnostics", {})
             auto = config.get('auto_timeline')
-            sample = _timeline_sample(players, diagnostics) if auto else None
+            sample, buffs = _timeline_evidence(players, diagnostics) if auto else (None, {})
             overrides = config.get("overrides", {})
             roster = config.get('xinfa_roster', {})
             players = [replace(player, is_tank=player.player_key == config.get('tank_key'),
@@ -229,12 +251,17 @@ class AnalysisWorker(QObject):
             if auto:
                 session = (config.get('timeline_session'), config['layout'])
                 if session != self._timeline_session:
-                    self._timeline = EncounterTimeline()
+                    clear_from = config.get('timeline_clear_from')
+                    if clear_from is not None and self._timeline_session == (clear_from, config['layout']):
+                        self._timeline.clear_round()
+                    else:
+                        self._timeline.reset()
                     self._timeline_session = session
-                phase = self._timeline.observe(metadata.get('captured_at'), sample)
+                phase = self._timeline.observe(metadata.get('captured_at'), sample, buffs)
                 mode, stage = phase.mode, phase.stage
                 metadata.update(timeline_phase=phase.key, timeline_label=phase.label,
-                                timeline_started_at=self._timeline.started_at)
+                                timeline_started_at=self._timeline.started_at,
+                                timeline_can_clear=self._timeline.can_clear_round)
             metadata.update(effective_mode=mode, snapshot_stage=stage)
             metadata['planning_cache_hit'] = False
             result = (self._auto_result(phase, players, diagnostics, config, metadata) if auto

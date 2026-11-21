@@ -353,6 +353,7 @@ class ControlPanel(QWidget):
     grid_requested = Signal()
     tank_requested = Signal()
     timeline_toggled = Signal(bool)
+    round_clear_requested = Signal()
     strategy_toggled = Signal(bool)
     attach_toggled = Signal()
     close_requested = Signal()
@@ -550,6 +551,18 @@ class ControlPanel(QWidget):
         self._timeline_label.setObjectName('timelineLabel')
         self._timeline_label.setTextFormat(Qt.TextFormat.PlainText)
         summary_row.addWidget(self._timeline_label, 0, Qt.AlignmentFlag.AlignRight)
+        self.clear_round_button = QToolButton()
+        self.clear_round_button.setObjectName('clearRoundButton')
+        self.clear_round_button.setText('清本轮')
+        self.clear_round_button.setToolTip('清除本轮指挥和标记，继续等待下一轮赤煞、幽煞')
+        self.clear_round_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_round_button.setFixedHeight(18)
+        self.clear_round_button.setStyleSheet(
+            'QToolButton { font-size: 11px; padding: 0 4px; color: #ffdf94; background: #3d3525; }'
+            'QToolButton:hover { background: #574529; }'
+        )
+        self.clear_round_button.clicked.connect(self.round_clear_requested)
+        summary_row.addWidget(self.clear_round_button)
         self.set_auto_timeline(True)
         status_rows.addLayout(summary_row)
         self._buff_counts_row = QWidget()
@@ -760,13 +773,14 @@ class ControlPanel(QWidget):
         self.tank_button.style().unpolish(self.tank_button)
         self.tank_button.style().polish(self.tank_button)
 
-    def set_auto_timeline(self, enabled: bool, phase: str = '') -> None:
+    def set_auto_timeline(self, enabled: bool, phase: str = '', *, can_clear: bool = False) -> None:
         self._check_silently(self.timeline_button, enabled)
         self.timeline_button.setAccessibleName('当前自动阶段' if enabled else '当前手动阶段')
         tip = '点击切到手动阶段。也可直接点扇+圈或仅圈接管。' if enabled else '点击开启自动阶段'
         self.timeline_button.setToolTip(f'{phase}\n{tip}' if enabled and phase else tip)
         self._timeline_label.setText(phase if enabled else '')
         self._timeline_label.setVisible(enabled and bool(phase))
+        self.clear_round_button.setVisible(enabled and can_clear)
 
     def set_exact_preference(self, enabled: bool) -> None:
         self._check_silently(self.strategy_button, not enabled)

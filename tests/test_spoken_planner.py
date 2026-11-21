@@ -25,7 +25,7 @@ def test_simple_accepts_safe_difference_for_easier_guides_and_exact_reaches_zero
     assert (simple.difference, exact.difference) == (1, 0)
     assert simple.strategy['effort'] < exact.strategy['effort']
     assert set(simple.plan.centers) == {'g3p4', 'g4p1', 'g5p3'}
-    assert simple.instruction == '\n3队和4队冰心、奶花引导\n'
+    assert simple.instruction == '\n两个冰心、奶花引导\n'
     assert all(simulate_plan(players, result.plan, tolerance=1).valid for result in (simple, exact))
 
 
@@ -36,6 +36,51 @@ def test_team_school_phrase_covers_exactly_the_two_assigned_tangmen():
     text, groups, _ = CallPlanner(players).compile(plan)
     assert text.splitlines()[0] == '1队和2队唐门吃扇'
     assert groups[0]['keys'] == ['g1p1', 'g2p1']
+
+
+@pytest.mark.parametrize('evaluator', [evaluate_exact_commands, evaluate_simple_commands])
+def test_scoped_fan_includes_black_two_and_matches_overlay(evaluator):
+    values = [0, 0, -1, -3, 0, -1, -3, -2, 0, -1, -1, -2, 2, -1, 0,
+              -1, -2, 0, -1, -4, -1, 0, 0, 0, 0]
+    hearts = ('cangjian', 'huajian', 'fenying', 'fenying', 'youluo',
+              'dujing', 'youluo', 'xiaochen', 'mowen', 'binxin',
+              'beiao', 'aoxue', 'linghai', 'fenshan', 'shanhai',
+              'butian', 'xiaochen', 'lijing', 'lingsu', 'xiangzhi',
+              'tielao', 'tiegu', 'mingzun', 'fenshan', 'fenshan')
+    players = [replace(p, alive=i not in (4, 24)) for i, p in enumerate(roster(values, dict(enumerate(hearts))))]
+    result = evaluator(players, snapshot_stage='before_tank')
+    assert result.instruction.splitlines() == [
+        '一二三四队和策T吃扇，三层及以上幽煞不吃', '扇后一层幽煞的引导',
+    ]
+    expected = {p.player_key for p, value in zip(players[:20], values) if p.alive and value > -3} | {'g5p1'}
+    assert {a.player_key for a in result.plan.actions if a.fan} == expected
+    assert {a.player_key for a in result.annotations if a.kind == 'fan'} == expected
+    assert set(result.strategy['groups'][0]['keys']) == expected
+    checked = simulate_plan(players, result.plan)
+    assert checked.valid and checked.strong_cancellations == 0
+    assert (result.final_red, result.final_black) == (checked.red_count, checked.black_count) == (6, 6)
+
+
+def test_mixed_fan_group_stays_together_and_remaining_players_use_nicknames():
+    values = [-1, -1, -1, -2, 0, -1, -2, -2, -1, -1, -1, 0, 2, -1, -1,
+              -1, -2, 0, -1, -2, -1, 0, 0, -1, 0]
+    hearts = {5: 'dujing', 6: 'youluo', 8: 'mowen', 11: 'tiegu', 12: 'linghai',
+              15: 'butian', 19: 'xiangzhi', 22: 'mingzun'}
+    players = [replace(p, alive=i not in (4, 24)) for i, p in enumerate(roster(values, hearts))]
+    fans = {p.player_key for p, value in zip(players, values) if value == -1} | {'g3p2', 'g5p3'}
+    centers = ('g2p2', 'g3p3', 'g4p5')
+    actions = tuple(PlayerAction(key, True) for key in sorted(fans)) + tuple(
+        PlayerAction(key, False, (order,)) for order, key in enumerate(centers, 1)
+    )
+    plan = SolverPlan('all', 'after_tank', actions, centers, current_snapshot=True)
+
+    text, groups, _ = CallPlanner(players).compile(plan)
+    assert text.splitlines() == [
+        '一层幽煞的、苍云T、喵T吃扇', '无相楼、蓬莱、奶歌引导',
+    ]
+    assert {key for group in groups if group['action'] == 'fan' for key in group['keys']} == fans
+    replay = simulate_plan(players, plan)
+    assert replay.valid and (replay.red_count, replay.black_count) == (3, 5)
 
 
 @pytest.mark.parametrize(('dps', 'healer', 'expected'), [
@@ -119,3 +164,19 @@ def test_roster_draft_can_be_delivered_again_without_sampling_after_confirmation
     draft = scan.observe(reader, image, None, 2)
     assert len(draft) == 25 and set(draft.values()) == {'binxin'}
     assert scan.observe(reader, image, None, 3) == draft and len(calls) == 3
+
+
+def test_roster_scan_preserves_ranked_candidates_for_uncertain_but_visible_icons():
+    frames = iter([
+        {'g1p1': np.array([.39, .50, .11]), 'g1p2': None},
+        {'g1p1': np.array([.52, .36, .12]), 'g1p2': None},
+        {'g1p1': np.array([.42, .49, .09]), 'g1p2': None},
+    ])
+    reader = SimpleNamespace(classes=('binxin', 'youluo', 'aoxue'), read=lambda *_: (next(frames), []))
+    scan, image = RosterScan(), QImage(12, 12, QImage.Format.Format_RGB32)
+
+    assert scan.observe(reader, image, None, 0.) is None
+    assert scan.observe(reader, image, None, 1.) is None
+    assert scan.observe(reader, image, None, 3.) == {}
+    assert scan.candidates == {'g1p1': ('youluo', 'binxin', 'aoxue')}
+    assert scan.observe(reader, image, None, 4.) == {}
